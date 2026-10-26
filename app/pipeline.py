@@ -1,7 +1,9 @@
 """filing HTML -> ballot -> facts -> classification -> recommendations."""
 from __future__ import annotations
 
+import hashlib
 import re
+from datetime import datetime, timezone
 
 import ai
 import llm
@@ -9,7 +11,7 @@ from classify import merge
 from extract import extract_ballot
 from facts import find_all, find_attendance, find_fees, find_pay
 from pages import split_pages
-from policy import SETTINGS
+from policy import POLICY, SETTINGS
 from rules import recommend
 
 FINDERS = {"attendance": find_attendance, "fees": find_fees, "pay": find_pay}
@@ -56,7 +58,27 @@ def _cross_check_facts(filing_id, pages, facts):
     return facts
 
 
-def analyze(filing_id: str, raw_html: str) -> tuple[dict, list]:
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def run_inputs(filing_id: str, raw_html: str, settings: dict) -> dict:
+    """Everything a recommendation depends on. If any of it changes, re-analysis
+    can tell her which (the filing, a setting, the AI model, or the stub answers)."""
+    mode = llm.mode_for(filing_id)
+    stub = llm.STUB_DIR / f"{filing_id}.json"
+    return {
+        "filing_sha256": _sha(raw_html),
+        "policy_version": POLICY["version"],
+        "settings": dict(settings),
+        "llm_mode": mode,
+        "llm_model": llm.MODEL if mode == "live" else None,
+        "stub_sha256": _sha(stub.read_text(encoding="utf-8")) if mode == "stub" and stub.exists() else None,
+    }
+
+
+def analyze(filing_id: str, raw_html: str, settings: dict | None = None) -> tuple[dict, list]:
+    settings = dict(SETTINGS if settings is None else settings)
     pages = split_pages(raw_html)
     filing = extract_ballot(filing_id, pages).to_dict()
     facts = _cross_check_facts(filing_id, pages, find_all(pages))
@@ -83,10 +105,12 @@ def analyze(filing_id: str, raw_html: str) -> tuple[dict, list]:
         cls = by_prop[it["proposal"]]
         it["classification"] = cls
         it["policy_rule"] = cls["rule"]
-        it["recommendation"] = recommend(it, cls, facts, SETTINGS)
+        it["recommendation"] = recommend(it, cls, facts, settings)
 
     filing["facts"] = facts
     filing["llm_mode"] = llm.mode_for(filing_id)
     filing["llm_model"] = llm.MODEL if filing["llm_mode"] == "live" else None
-    filing["settings"] = SETTINGS
+    filing["settings"] = settings
+    filing["run"] = {**run_inputs(filing_id, raw_html, settings),
+                     "analyzed_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     return filing, pages

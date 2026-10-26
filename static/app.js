@@ -9,6 +9,7 @@ const state = {
   page: null,           // page drawer: { filingId, index, find, kind, label, pageCount }
   editing: null,        // item number whose vote form is open
   collapsed: {},
+  reports: {},          // id -> what the last re-analysis changed (from the server)
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -55,6 +56,8 @@ const STATE_LABEL = {
   stale: "Re-confirm",
   undecided: "Undecided",
 };
+// Why a decision needs another look after a re-analysis (decisions.py has the full list).
+const CHANGE_LABEL = { conflicts: "Re-decide", now_agrees: "Confirm", item_changed: "Re-decide" };
 const VOTES = ["FOR", "AGAINST", "ABSTAIN", "ABSENT"];
 const ALWAYS_EXPLAIN = ["ABSTAIN", "ABSENT"];
 const VOTE_LABEL = { FOR: "FOR", AGAINST: "AGAINST", ABSTAIN: "ABSTAIN", ABSENT: "ABSENT (not voting)" };
@@ -98,15 +101,17 @@ const decisionOf = (f, n) => state.decisions[f.id]?.items[n] || { state: "undeci
 
 function yourVote(f, it) {
   const d = decisionOf(f, it.number);
-  if (d.state === "stale") return `<span class="yv stale" title="${esc(d.note)}">Re-confirm</span>`;
+  if (d.state === "stale") return `<span class="yv stale" title="${esc(d.note)}">${esc(CHANGE_LABEL[d.change] || "Re-confirm")}</span>`;
   if (!d.final_vote) return `<span class="yv none">—</span>`;
-  return `${voteBadge(d.final_vote)} <span class="yv ${d.state}">${esc(STATE_LABEL[d.state])}</span>`;
+  return `${voteBadge(d.final_vote)} <span class="yv ${d.state}">${esc(STATE_LABEL[d.state])}</span>
+    ${d.basis_changed ? `<span class="chip warn" title="${esc(d.changes.join("\n"))}">Reasoning changed</span>` : ""}`;
 }
 
 function dotFor(f, it) {
   const d = decisionOf(f, it.number);
   const v = d.final_vote || it.recommendation.vote;
-  return `<span class="dot ${v} ${d.final_vote ? "done" : ""} ${d.state}" title="${esc(STATE_LABEL[d.state])}"></span>`;
+  const title = d.state === "stale" ? CHANGE_LABEL[d.change] || "Re-confirm" : d.basis_changed ? "Reasoning changed" : STATE_LABEL[d.state];
+  return `<span class="dot ${v} ${d.final_vote ? "done" : ""} ${d.state} ${d.basis_changed ? "basis" : ""}" title="${esc(title)}"></span>`;
 }
 
 function toast(msg) {
@@ -167,7 +172,7 @@ function renderRail() {
         <span class="filing-name">${esc(s.company)}</span>
         <span class="filing-sub">
           <span>${esc(s.meeting_date || "Date unknown")}</span>
-          <span>${s.decided_count}/${s.item_count} decided</span>
+          <span>${s.review_count ? `<span class="flags">${s.review_count} to revisit</span> · ` : ""}${s.decided_count}/${s.item_count} decided</span>
         </span>
       </a>
       ${selected && f ? `<div class="rail-items">${railItems(f, route.item)}</div>` : ""}
@@ -197,6 +202,44 @@ function itemRow(f, it, sub = false) {
       <td class="rulec">${ruleChip(it.policy_rule)}</td>
       <td class="yourc">${yourVote(f, it)}</td>
     </tr>`;
+}
+
+const reviewCount = (ds) => Object.values(ds.review || {}).reduce((n, v) => n + v.length, 0);
+
+function itemLinks(f, numbers) {
+  return numbers.map((n) => {
+    const it = f.items.find((x) => x.number === n);
+    return `<a href="${itemHref(f, n)}" title="${esc(it?.title || "")}">${esc(n)}${it ? ` ${esc(shortTitle(it))}` : ""}</a>`;
+  }).join(", ");
+}
+
+// What changed since she decided (from the decisions), plus what the last re-analysis moved.
+function reviewBanner(f, ds) {
+  const r = ds.review || {};
+  const rep = state.reports[f.id];
+  const rows = [
+    [r.conflicts, "Recommendation changed and no longer matches your vote. Decide again"],
+    [r.item_changed, "A different item now has this number. Decide again"],
+    [r.now_agrees, "Recommendation changed and now matches your vote. Confirm to keep it"],
+    [r.basis_changed, "Same recommendation, different reasoning. Your vote still counts; worth a look"],
+  ].filter(([ns]) => ns && ns.length);
+  const removed = r.removed || [];
+  const undecidedMoved = (rep?.recommendations_changed || []).filter((m) => !(ds.items[m.number]?.final_vote_then || ds.items[m.number]?.final_vote));
+  if (!rows.length && !removed.length && !rep) return "";
+  const causes = ds.causes?.length ? ds.causes : rep?.causes || [];
+  const ok = !rows.length && !removed.length;
+  return `
+    <div class="review-card ${ok ? "ok" : ""}">
+      <div class="review-head">
+        <b>${ok ? "Re-analysed: none of your decisions are affected" : `${reviewCount(ds)} decision${reviewCount(ds) === 1 ? "" : "s"} to revisit`}</b>
+        ${rep ? `<button class="btn ghost small" data-dismiss-report>Dismiss</button>` : ""}
+      </div>
+      ${causes.length ? `<div class="meta-line">What changed: ${causes.map(esc).join("; ")}.</div>` : ""}
+      ${rows.length ? `<ul class="review-list">${rows.map(([ns, label]) => `<li><span>${esc(label)}:</span> ${itemLinks(f, ns)}</li>`).join("")}</ul>` : ""}
+      ${removed.length ? `<div class="meta-line">No longer on the ballot (kept, not exported): ${removed.map((x) => `${esc(x.number)} ${esc(x.title)} (you voted ${esc(x.vote)})`).join("; ")}</div>` : ""}
+      ${undecidedMoved.length ? `<div class="meta-line">Recommendations that changed on items you hadn't decided: ${undecidedMoved.map((m) => `<a href="${itemHref(f, m.number)}">${esc(m.number)}</a> ${esc(m.before)} → ${esc(m.after)}`).join(", ")}</div>` : ""}
+      ${rep && !causes.length && !rep.recommendations_changed.length ? `<div class="meta-line">Nothing in the filing, policy settings or AI changed, so every recommendation is the same.</div>` : ""}
+    </div>`;
 }
 
 function renderFiling(f) {
@@ -265,8 +308,11 @@ function renderFiling(f) {
         ${nextOpen ? `<a class="btn primary" href="${itemHref(f, nextOpen.number)}">${ds.decided ? "Continue" : "Start review"} → item ${esc(nextOpen.number)}</a>` : ""}
         <a class="btn" href="/api/filings/${encodeURIComponent(f.id)}/export.csv" data-export>Export CSV</a>
         <a class="btn" href="/api/filings/${encodeURIComponent(f.id)}/export.json" data-export>Export JSON</a>
+        <button class="btn" data-reanalyse="${esc(f.id)}" title="Read the filing again and re-run every item with the current policy settings and AI. Your decisions are kept and checked against the new recommendations.">Re-analyse</button>
       </div>
+      <div class="meta-line run-line">Analysed ${esc(new Date(f.run.analyzed_at).toLocaleString())} · ${esc(f.run.llm_model || LLM_MODE[f.llm_mode]?.label || f.llm_mode)}</div>
     </div>
+    ${reviewBanner(f, ds)}
     <div class="card">
       <table>
         <thead>
@@ -332,17 +378,39 @@ const needsReason = (it, vote) =>
   it.recommendation.vote === "FLAG" || ALWAYS_EXPLAIN.includes(vote) || (vote && vote !== it.recommendation.vote);
 const reasonHint = (it, vote) => (needsReason(it, vote) ? "(required)" : vote ? "(optional)" : "(required unless you keep the policy vote)");
 
+// Before/after for a decision whose recommendation or reasoning changed since she made it.
+function changesBox(d) {
+  const b = d.basis_then;
+  const causes = d.causes?.length ? `<div class="meta-line">Because: ${d.causes.map(esc).join("; ")}.</div>` : "";
+  return `
+    <ul class="changes">${(d.changes || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
+    ${causes}
+    ${b ? `<details class="how"><summary>What you saw when you decided</summary>
+      <div class="then">${voteBadge(b.vote)} <span class="rec-head">${esc(b.headline)}</span></div>
+      ${b.steps?.length ? `<ol class="steps">${b.steps.map((x) => `<li>${esc(x?.text ?? x)}</li>`).join("")}</ol>` : ""}
+    </details>` : ""}`;
+}
+
 function decisionBox(f, it) {
   const d = decisionOf(f, it.number);
   const policy = it.recommendation.vote;
-  const editing = state.editing === it.number || (!d.final_vote && policy === "FLAG");
+  const editing = state.editing === it.number || (!d.final_vote && policy === "FLAG" && d.change !== "now_agrees");
   let body;
   if (d.state === "stale" && state.editing !== it.number) {
-    body = `
-      <div class="warn">${esc(d.note)} You voted <b>${esc(d.final_vote_then || "")}</b>${d.reason ? `: “${esc(d.reason)}”` : ""}.</div>
-      ${policy === "FLAG" ? voteForm(it, d) : `<div class="form-actions">
+    const then = `You voted <b>${esc(d.final_vote_then || "")}</b>${d.reason ? `: “${esc(d.reason)}”` : ""}.`;
+    let actions;
+    if (d.change === "now_agrees") {
+      actions = `<div class="form-actions">
+        <button class="btn primary" data-confirm="${esc(it.number)}">Keep ${esc(d.final_vote_then)} <kbd>A</kbd></button>
+        <button class="btn" data-edit="${esc(it.number)}">Choose another vote <kbd>O</kbd></button></div>`;
+    } else if (policy === "FLAG") {
+      actions = voteForm(it, d);
+    } else {
+      actions = `<div class="form-actions">
         <button class="btn primary" data-accept="${esc(it.number)}">Accept ${esc(policy)} <kbd>A</kbd></button>
-        <button class="btn" data-edit="${esc(it.number)}">Choose another vote <kbd>O</kbd></button></div>`}`;
+        <button class="btn" data-edit="${esc(it.number)}">Keep or choose another vote <kbd>O</kbd></button></div>`;
+    }
+    body = `<div class="warn">${esc(d.note)} ${then}</div>${changesBox(d)}${actions}`;
   } else if (editing) {
     body = voteForm(it, d);
   } else if (d.final_vote) {
@@ -351,8 +419,11 @@ function decisionBox(f, it) {
         <div class="decided-top">${voteBadge(d.final_vote, true)} <span class="yv ${d.state}">${esc(STATE_LABEL[d.state])}</span>
           ${d.state === "overridden" ? `<span class="muted">Policy said ${esc(policy)}</span>` : ""}</div>
         ${d.reason ? `<div class="decided-reason">“${esc(d.reason)}”</div>` : ""}
-        <div class="meta-line">Saved ${esc(new Date(d.decided_at).toLocaleString())}</div>
+        <div class="meta-line">Saved ${esc(new Date(d.decided_at).toLocaleString())}${d.reconfirmed_after?.length ? ` · re-confirmed after: ${esc(d.reconfirmed_after.join("; "))}` : ""}</div>
       </div>
+      ${d.basis_changed ? `<div class="info"><b>The reasoning behind this recommendation changed since you decided.</b> The vote is the same, so your decision still counts.
+        ${changesBox(d)}
+        <div class="form-actions"><button class="btn small" data-confirm="${esc(it.number)}">Mark as reviewed</button></div></div>` : ""}
       <div class="form-actions">
         <button class="btn" data-edit="${esc(it.number)}">Change</button>
         <button class="btn ghost" data-clear="${esc(it.number)}">Undo decision</button>
@@ -454,7 +525,7 @@ async function saveDecision(f, numbers, action, vote, reason) {
   const ds = await api(`/api/filings/${encodeURIComponent(f.id)}/decisions`, { items: numbers, action, vote, reason });
   state.decisions[f.id] = ds;
   const s = state.filings.find((x) => x.id === f.id);
-  if (s) s.decided_count = ds.decided;
+  if (s) { s.decided_count = ds.decided; s.review_count = reviewCount(ds); }
   state.editing = null;
   return ds;
 }
@@ -520,19 +591,44 @@ function closeOverlay() {
 
 // ------------------------------------------------------------------ policy
 
+function settingSelect(s) {
+  const changed = String(s.value) !== String(s.default);
+  return `<li class="setting ${changed ? "changed" : ""}">
+    <label><b>${esc(s.label)}</b>
+      <select data-setting="${esc(s.id)}">${Object.entries(s.options).map(([k, text]) =>
+        `<option value="${esc(k)}" ${k === String(s.value) ? "selected" : ""}>${esc(text)}${k === String(s.default) ? " (default)" : ""}</option>`).join("")}</select>
+    </label>
+    <div class="why">${esc(s.why)}</div></li>`;
+}
+
+// After a settings change: one line per filing on what moved and what she needs to revisit.
+function reportList() {
+  const reps = Object.values(state.reports);
+  if (!reps.length) return "";
+  return `<div class="review-card">
+    <div class="review-head"><b>Re-analysed ${reps.length} filing${reps.length > 1 ? "s" : ""}</b>
+      <button class="btn ghost small" data-dismiss-report>Dismiss</button></div>
+    <ul class="review-list">${reps.map((r) => {
+      const n = Object.values(r.review).reduce((a, v) => a + v.length, 0);
+      const moved = r.recommendations_changed.map((m) => `${esc(m.number)} ${esc(m.before)} → ${esc(m.after)}`).join(", ");
+      return `<li><a href="#/filing/${encodeURIComponent(r.filing)}"><b>${esc(r.company)}</b></a>:
+        ${moved ? `recommendations changed on ${moved}` : "no recommendation changed"}${n ? `; <span class="flags">${n} of your decisions to revisit</span>` : ""}.</li>`;
+    }).join("")}</ul></div>`;
+}
+
 function renderPolicy() {
   const p = state.policy;
-  const optText = (s) => s.options[String(s.value)] ?? String(s.value);
   const main = $("#main");
   main.classList.remove("full");
   main.innerHTML = `
     <div class="page-head">
       <div>
-        <div class="kicker">Hard-coded · version ${esc(p.version)}</div>
+        <div class="kicker">Rules hard-coded · version ${esc(p.version)} · settings editable</div>
         <h1>${esc(p.name)}</h1>
         <div class="meta"><span>${p.rules.length} rules. Anything no rule covers, or any rule missing a confirmed fact, goes to the analyst. It's never auto-voted.</span></div>
       </div>
     </div>
+    ${reportList()}
     <div class="policy-grid">
       ${p.rules.map((r) => {
         const settings = p.settings.filter((s) => s.rule === r.id);
@@ -545,13 +641,54 @@ function renderPolicy() {
               <span><b>Default vote:</b> ${r.default ? esc(r.default) : "None (analyst decides)"}</span>
               ${r.needs.length ? `<span><b>Needs from the filing:</b> ${r.needs.map(esc).join("; ")}</span>` : ""}
             </div>
-            ${settings.length ? `<ul class="settings">${settings.map((s) =>
-              `<li><b>${esc(s.label)}:</b> ${esc(optText(s))}<div class="why">${esc(s.why)}</div></li>`).join("")}</ul>` : ""}
+            ${settings.length ? `<ul class="settings editable">${settings.map(settingSelect).join("")}</ul>` : ""}
           </div>
         </div>`;
       }).join("")}
     </div>
-    <p class="note">Rules and settings live in <code>app/policy.py</code>. Settings are the judgement calls the policy wording leaves open. Each one is shown next to the recommendations it affects.</p>`;
+    <p class="note">Settings are the judgement calls the policy wording leaves open. Each one is shown next to the recommendations it affects.
+      Changing one re-analyses every filing; your decisions are kept, and any the change affects are marked for you to revisit.
+      Rules and defaults live in <code>app/policy.py</code>.</p>`;
+}
+
+// ------------------------------------------------------------------ re-analysis
+
+// The server re-ran the pipeline: drop cached filings so the next render fetches the new ones.
+function applyReanalysis(res) {
+  state.filings = res.filings;
+  if (res.policy) state.policy = res.policy;
+  state.reports = {};
+  for (const r of res.reports) {
+    state.reports[r.filing] = r;
+    delete state.cache[r.filing];
+    delete state.decisions[r.filing];
+  }
+  state.editing = null;
+}
+
+async function reanalyse(body, busyEl) {
+  const label = busyEl?.textContent;
+  if (busyEl) {
+    busyEl.disabled = true;
+    if (busyEl.tagName === "BUTTON") busyEl.textContent = "Re-analysing…";
+  }
+  toast("Re-analysing…");
+  try {
+    const res = await api(body.id ? "/api/policy/settings" : "/api/reanalyze", body);
+    applyReanalysis(res);
+    const n = res.reports.reduce((a, r) => a + Object.values(r.review).reduce((x, v) => x + v.length, 0), 0);
+    toast(n ? `Re-analysed. ${n} decision${n > 1 ? "s" : ""} to revisit.` : "Re-analysed. None of your decisions are affected.");
+    await route();
+  } catch (err) {
+    toast(err.message);
+    if (location.hash === "#/policy") renderPolicy();
+  } finally {
+    // Buttons outside #main (the rail footer) aren't re-rendered, so put them back.
+    if (busyEl?.isConnected) {
+      busyEl.disabled = false;
+      if (busyEl.tagName === "BUTTON") busyEl.textContent = label;
+    }
+  }
 }
 
 // ------------------------------------------------------------------ routing
@@ -626,6 +763,14 @@ document.addEventListener("click", (e) => {
     return;
   }
 
+  const rean = t.closest("[data-reanalyse]");
+  if (rean) return reanalyse(rean.dataset.reanalyse ? { filing: rean.dataset.reanalyse } : {}, rean);
+  if (t.closest("[data-dismiss-report]")) {
+    const r = parseRoute();
+    if (r) delete state.reports[r.filingId]; else state.reports = {};
+    return route();
+  }
+
   const f = currentFiling();
   const exp = t.closest("[data-export]");
   if (exp && f) {
@@ -650,6 +795,15 @@ document.addEventListener("click", (e) => {
       goToNextOpen(f, it.number);
     });
   }
+  if (it && t.closest("[data-confirm]")) {
+    const wasStale = decisionOf(f, it.number).state === "stale";
+    return act(async () => {
+      const ds = await saveDecision(f, [it.number], "confirm");
+      toast(`Item ${it.number}: kept ${ds.items[it.number].final_vote}.`);
+      if (wasStale) goToNextOpen(f, it.number);
+      else { renderRail(); refreshDecision(f, it); }
+    });
+  }
   if (it && t.closest("[data-edit]")) { state.editing = it.number; return refreshDecision(f, it); }
   if (it && t.closest("[data-cancel-edit]")) { state.editing = null; return refreshDecision(f, it); }
   if (it && t.closest("[data-clear]")) {
@@ -663,6 +817,8 @@ document.addEventListener("click", (e) => {
 });
 
 document.addEventListener("change", (e) => {
+  const sel = e.target.closest("[data-setting]");
+  if (sel) return reanalyse({ id: sel.dataset.setting, value: sel.value }, sel);
   const form = e.target.closest("[data-vote-form]");
   const f = currentFiling();
   if (!form || !f || e.target.name !== "vote") return;
@@ -707,7 +863,8 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") location.hash = filingHref(f);
   else if (e.key === "ArrowLeft" && idx > 0) location.hash = itemHref(f, f.items[idx - 1].number);
   else if (e.key === "ArrowRight" && idx < f.items.length - 1) location.hash = itemHref(f, f.items[idx + 1].number);
-  else if ((e.key === "a" || e.key === "A") && $("[data-accept]")) $("[data-accept]").click();
+  else if ((e.key === "a" || e.key === "A") && $("[data-accept], .decision.stale [data-confirm]"))
+    $("[data-accept], .decision.stale [data-confirm]").click();
   else if ((e.key === "o" || e.key === "O") && $("[data-edit]")) { e.preventDefault(); state.editing = it.number; refreshDecision(f, it); }
 });
 window.addEventListener("hashchange", route);

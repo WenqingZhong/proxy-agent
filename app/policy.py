@@ -2,9 +2,13 @@
 
 RULES are what she was given. SETTINGS are the judgement calls the rules leave
 open; each one is shown in the app next to the recommendations it affects, so
-nothing is decided silently. Change them here.
+nothing is decided silently. Defaults are set here; she can change them on the
+policy page (saved to data/policy_settings.json), which re-analyses every filing.
 """
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 POLICY = {
     "name": "Sample voting policy",
@@ -102,4 +106,36 @@ POLICY = {
     ],
 }
 
-SETTINGS = {s["id"]: s["value"] for s in POLICY["settings"]}
+SETTINGS = {s["id"]: s["value"] for s in POLICY["settings"]}   # the defaults above
+
+# Changes she makes in the app are saved here, over the defaults (gitignored).
+SETTINGS_FILE = Path(__file__).resolve().parents[1] / "data" / "policy_settings.json"
+
+
+def current_settings(path: Path | None = None) -> dict:
+    p = Path(path or SETTINGS_FILE)
+    saved = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    return {k: saved.get(k, v) for k, v in SETTINGS.items()}
+
+
+def set_setting(setting_id: str, value, path: Path | None = None) -> dict:
+    """Save one setting. Raises ValueError if the id or value isn't one of the options."""
+    s = next((x for x in POLICY["settings"] if x["id"] == setting_id), None)
+    if not s:
+        raise ValueError(f"Unknown setting: {setting_id}.")
+    match = [o for o in s["options"] if str(o).lower() == str(value).lower()]
+    if not match:
+        raise ValueError(f"{s['label']} must be one of: {', '.join(map(str, s['options']))}.")
+    p = Path(path or SETTINGS_FILE)
+    values = current_settings(p)
+    values[setting_id] = match[0]
+    changed = {k: v for k, v in values.items() if v != SETTINGS[k]}
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(changed, indent=2), encoding="utf-8")
+    return values
+
+
+def policy_view(settings: dict) -> dict:
+    """POLICY with each setting's current value (and its default) for the app."""
+    return {**POLICY, "settings": [{**s, "default": s["value"], "value": settings[s["id"]]}
+                                   for s in POLICY["settings"]]}

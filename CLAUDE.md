@@ -37,7 +37,7 @@ one), Alphabet 2026, Amazon 2026.
 
 ```bash
 python3 server.py                  # http://localhost:8000 (port arg optional)
-python3 -m unittest discover tests # 46 tests, all should pass
+python3 -m unittest discover tests # 58 tests, all should pass
 ```
 Python 3.9+ standard library only, no pip installs. That was deliberate: package downloads were
 blocked in the original build environment, and a zero-install app is easy to demo.
@@ -91,7 +91,9 @@ Front end is plain JS/CSS in `static/`, no build step.
 
 ```
 server.py          stdlib ThreadingHTTPServer; parses all filings at startup.
-                   API: GET /api/policy, /api/filings, /api/filings/<id>, /api/filings/<id>/pages/<index>
+                   API: GET /api/policy, /api/filings, /api/filings/<id>, /api/filings/<id>/pages/<index>,
+                   /api/filings/<id>/decisions, /api/filings/<id>/export.csv|json;
+                   POST /api/filings/<id>/decisions, /api/reanalyze {filing?}, /api/policy/settings {id, value}
 app/pages.py       split HTML on CSS page-breaks; printed page number from footer (cleaned to a
                    monotonic sequence); Page.lines, .tables, .tables_html, .blocks (for display);
                    table_grid() is colspan/rowspan-aware
@@ -113,14 +115,16 @@ app/ai.py          LLM jobs: classify_items, locate_facts (page index of heading
 app/classify.py    keyword_category() + merge() → status agreed|keywords_only|disagree|unverified
 app/rules.py       directors / say_on_pay / auditor / board_structure / recommend(); each returns
                    {vote, rule, headline, steps, facts, settings}
-app/policy.py      POLICY (rules + settings) and SETTINGS dict
-app/decisions.py   analyst decisions (accept/override), states, CSV/JSON export
-app/pipeline.py    analyze(filing_id, raw_html) → filing dict + pages
+app/policy.py      POLICY (rules + settings), SETTINGS (defaults); current_settings() / set_setting()
+                   overlay data/policy_settings.json (gitignored); policy_view() for the app
+app/decisions.py   analyst decisions (accept/override/confirm), states, re-analysis diff, CSV/JSON export
+app/pipeline.py    analyze(filing_id, raw_html, settings) → filing dict + pages; filing["run"] records
+                   the inputs (filing hash, settings, LLM mode/model, stub hash)
 data/llm_stub/     hand-written stand-in LLM answers for the 3 samples (categories are a human
                    reading; quotes copied from the filings). Labelled "AI: stub" in the UI. Be
                    upfront about this in the walkthrough.
 tests/             test_ballots.py (extraction, vote summaries), test_decisions.py, test_recommendations.py (facts, recs, failure
-                   paths), test_llm_client.py (mocked API)
+                   paths), test_reanalysis.py, test_llm_client.py (mocked API)
 ```
 
 Gotchas found along the way:
@@ -135,7 +139,7 @@ Gotchas found along the way:
 ## Status / next steps
 
 Done: browse filings, ballot, board recs, facts, classification, recommendations, policy page with
-settings, tests (46). Plus:
+settings, tests (58). Plus:
 - **Item view** (`#/filing/<id>/item/<n>`), one column, top to bottom: *What you're voting on*
   (verbatim RESOLVED text, else the section's lead paragraph: `summary` / `summary_kind` from
   `extract._find_summary`), *Recommendation* (policy + board, reasoning steps, source links),
@@ -147,6 +151,20 @@ settings, tests (46). Plus:
   REVIEW items, and always for ABSTAIN/ABSENT). Stale if the recommendation changes later.
   Bulk-accept passing nominees. Auto-advance to the next open item.
 - **Export** CSV + JSON per filing (`/api/filings/<id>/export.csv|json`); warns if undecided.
+- **Re-analysis** (agreed with the user): when a setting, the filing or the AI changes, every item is
+  re-run and her decisions are checked against the new recommendations. Each decision stores an
+  item `key` (number + title), a `basis` (vote, rule, category, board rec, settings used, the fact
+  values the rule read, evidence pages) and the `run` inputs. Worked out on read:
+  `stale` + `change` = `conflicts` (new rec ≠ her vote) | `now_agrees` (new rec = her vote) |
+  `item_changed` (number now a different item) → blocks completeness until she acts;
+  `basis_changed` (same vote, different facts/settings/pages) → **notify only**, still counts;
+  decisions for items no longer on the ballot → `review.removed`, kept, not exported.
+  **Nothing is ever changed for her automatically** (user's call): `now_agrees` needs a click
+  (action `confirm` keeps her vote + reason against the current recommendation). Old decisions go
+  to `history`; `reconfirmed_after` lists what changed; both reach the export.
+  Triggers: editing a setting on the policy page (re-analyses all filings), the Re-analyse button
+  (one filing) / rail link (all, also picks up new files), or a restart with a different
+  `ANTHROPIC_MODEL` / `LLM_MODE` (decisions compare their stored `run` on read).
 
 UI: desktop web only, no mobile styles (user's call).
 

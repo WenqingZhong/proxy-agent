@@ -4,3 +4,4 @@ __pycache__/
 _to_delete/
 data/llm_cache/
 data/decisions/
+data/policy_settings.json

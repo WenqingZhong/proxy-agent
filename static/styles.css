@@ -402,3 +402,32 @@ tbody tr.item.active td { background: var(--accent-soft); }
 .stat-num.for { color: var(--for); }
 .stat-num.against { color: var(--against); }
 .stat-num.flag { color: var(--flag); }
+
+/* ---------- Re-analysis ---------- */
+.run-line { grid-column: 1 / -1; margin-top: 0; font-size: 14px; }
+.review-card {
+  background: var(--flag-bg); border: 1px solid color-mix(in srgb, var(--flag) 35%, var(--line));
+  border-radius: 12px; padding: 14px 18px; margin-bottom: 16px;
+}
+.review-card.ok { background: var(--for-bg); border-color: color-mix(in srgb, var(--for) 30%, var(--line)); }
+.review-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.review-list { margin: 8px 0 0; padding-left: 18px; }
+.review-list li { margin-bottom: 4px; }
+.review-list a, .review-card .meta-line a { color: var(--accent); }
+.review-card .flags { color: var(--flag); font-weight: 600; }
+.changes { margin: 8px 0 0; padding-left: 18px; font-size: 15px; }
+.changes li { margin-bottom: 3px; }
+.then { margin-top: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.info {
+  margin-top: 12px; padding: 10px 14px; border-radius: var(--radius);
+  background: var(--flag-bg); border: 1px solid color-mix(in srgb, var(--flag) 30%, var(--line));
+}
+.dot.basis { outline: 2px solid var(--flag); outline-offset: 1px; }
+.settings.editable { list-style: none; padding-left: 0; }
+.settings.editable label { display: flex; flex-direction: column; gap: 4px; }
+.settings.editable select {
+  font: inherit; font-size: 15px; padding: 5px 8px; border-radius: 7px; max-width: 100%;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+}
+.setting.changed select { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.link-btn { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
