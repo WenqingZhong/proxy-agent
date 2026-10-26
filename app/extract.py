@@ -50,6 +50,8 @@ class BallotItem:
     section: Evidence | None
     board_rec_evidence: Evidence | None = None
     proposal_title: str = ""       # the proposal's own title (for nominees: "Election of Directors")
+    summary: Evidence | None = None  # what is being voted on, verbatim from the filing
+    summary_kind: str = ""         # resolution (the "RESOLVED" text) | intro (the section's lead paragraph)
 
 
 @dataclass
@@ -258,6 +260,71 @@ def _nominees_from_notice(pages: list[Page]) -> tuple[list[str], Page | None]:
     return [], None
 
 
+RESOLVED = re.compile(r"^resolved\b\s*[:,]?", re.I)
+ASKING = re.compile(r"\b(?:we are asking|you are being asked|are asked to|asking (?:our )?(?:shareholders|stockholders)|"
+                    r"seeking an? (?:advisory|non-binding)|the board has nominated|our board nominated|"
+                    r"has appointed|will be asked to|is submitting)\b", re.I)
+_SQUASH = re.compile(r"[^a-z0-9]")
+
+
+def _find_summary(pages: list[Page], start: int, end: int, heading: str) -> tuple[Evidence | None, str]:
+    """What the shareholders are voting on, copied verbatim from the item's section.
+
+    Prefers the resolution itself ("RESOLVED: ..."); otherwise the paragraph that
+    says what is being asked ("We are asking shareholders to approve ..."), else
+    the first full paragraph after the heading. Only looks inside the item's own
+    pages, so it can't pick up the next proposal's text."""
+    head = _SQUASH.sub("", heading.lower())
+    lines: list[tuple[Page, str]] = []
+    for idx in range(start, min(max(end, start + 1), start + 5, len(pages))):
+        page_lines = pages[idx].lines
+        first = 0
+        if idx == start:
+            # Skip the page's navigation/header lines: begin after the heading
+            # (which may be split over several lines).
+            for k, line in enumerate(page_lines):
+                sq = _SQUASH.sub("", line.lower())
+                if len(sq) >= 8 and (head.startswith(sq) or sq.startswith(head[:20])):
+                    first = k + 1
+                    while first < len(page_lines) and _SQUASH.sub("", page_lines[first].lower()) in head:
+                        first += 1
+                    break
+        lines += [(pages[idx], ln) for ln in page_lines[first:]]
+
+    for k, (page, line) in enumerate(lines):
+        if RESOLVED.match(line):
+            text = line
+            if len(line) < 30 and k + 1 < len(lines):   # "RESOLVED:" alone, text on the next line
+                text, k = f"{line} {lines[k + 1][1]}", k + 1
+            if text.rstrip().endswith(":") and k + 1 < len(lines):   # "... as follows:" then the terms
+                text = f"{text} {lines[k + 1][1]}"
+            return Evidence(page.label, page.index, text), "resolution"
+    ok = [(k, p, ln) for k, (p, ln) in enumerate(lines)
+          if len(ln) >= 40 and not ln.lower().startswith(("(", "http")) and not REC.search(ln)]
+    pick = next((x for x in ok if ASKING.search(x[2])), next((x for x in ok if len(x[2]) >= 80), None))
+    if not pick:
+        return None, ""
+    k, page, text = pick
+    if text.endswith(":"):
+        # "our Board nominated:" followed by a bulleted list: keep the list and the line that closes it.
+        rest = [ln for _, ln in lines[k + 1:k + 30]]
+        bullets = []
+        for ln in rest:
+            if not ln.startswith("•"):
+                if ln[:1].islower():
+                    bullets.append(ln)
+                break
+            bullets.append(ln)
+        text = " ".join([text] + bullets)
+    elif text[0].islower():
+        # A sentence continued after a bulleted list ("our Board nominated: • A • B ... as nominees
+        # for election"): show the line that opens it too, joined with an ellipsis.
+        lead = next((ln for _, ln in reversed(lines[:k]) if not ln.startswith("•")), None)
+        if lead:
+            text = f"{lead} … {text}"
+    return Evidence(page.label, page.index, text), "intro"
+
+
 # --------------------------------------------------------------------------- #
 
 def extract_ballot(filing_id: str, pages: list[Page]) -> Filing:
@@ -288,6 +355,7 @@ def extract_ballot(filing_id: str, pages: list[Page]) -> Filing:
         rec, rec_ev = _find_board_rec(pages, page.index, min(end + 1, len(pages)))
         title = _pick_title(by_num[n])
         kind, proponent = _classify(title)
+        summary, summary_kind = _find_summary(pages, page.index, end, quote)
         item = BallotItem(
             number=str(n),
             title=title,
@@ -297,6 +365,8 @@ def extract_ballot(filing_id: str, pages: list[Page]) -> Filing:
             section=Evidence(page.label, page.index, quote),
             board_rec_evidence=rec_ev,
             proposal_title=title,
+            summary=summary,
+            summary_kind=summary_kind,
         )
         if rec is None:
             filing.warnings.append(f"Item {n}: couldn't find the board's recommendation.")
@@ -316,6 +386,8 @@ def extract_ballot(filing_id: str, pages: list[Page]) -> Filing:
                         section=item.section,
                         board_rec_evidence=rec_ev,
                         proposal_title=title,
+                        summary=summary,
+                        summary_kind=summary_kind,
                     ))
                 continue
             filing.warnings.append("Couldn't list individual director nominees.")

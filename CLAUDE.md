@@ -37,7 +37,7 @@ one), Alphabet 2026, Amazon 2026.
 
 ```bash
 python3 server.py                  # http://localhost:8000 (port arg optional)
-python3 -m unittest discover tests # 31 tests, all should pass
+python3 -m unittest discover tests # 46 tests, all should pass
 ```
 Python 3.9+ standard library only, no pip installs. That was deliberate: package downloads were
 blocked in the original build environment, and a zero-install app is easy to demo.
@@ -114,11 +114,12 @@ app/classify.py    keyword_category() + merge() → status agreed|keywords_only|
 app/rules.py       directors / say_on_pay / auditor / board_structure / recommend(); each returns
                    {vote, rule, headline, steps, facts, settings}
 app/policy.py      POLICY (rules + settings) and SETTINGS dict
+app/decisions.py   analyst decisions (accept/override), states, CSV/JSON export
 app/pipeline.py    analyze(filing_id, raw_html) → filing dict + pages
 data/llm_stub/     hand-written stand-in LLM answers for the 3 samples (categories are a human
                    reading; quotes copied from the filings). Labelled "AI: stub" in the UI. Be
                    upfront about this in the walkthrough.
-tests/             test_ballots.py (extraction), test_recommendations.py (facts, recs, failure
+tests/             test_ballots.py (extraction, vote summaries), test_decisions.py, test_recommendations.py (facts, recs, failure
                    paths), test_llm_client.py (mocked API)
 ```
 
@@ -133,30 +134,27 @@ Gotchas found along the way:
 
 ## Status / next steps
 
-Done: browse filings, ballot, board recs, facts, classification, recommendations with evidence and
-a page viewer, policy page with settings, tests.
+Done: browse filings, ballot, board recs, facts, classification, recommendations, policy page with
+settings, tests (46). Plus:
+- **Item view** (`#/filing/<id>/item/<n>`), one column, top to bottom: *What you're voting on*
+  (verbatim RESOLVED text, else the section's lead paragraph: `summary` / `summary_kind` from
+  `extract._find_summary`), *Recommendation* (policy + board, reasoning steps, source links),
+  *Your decision*, *Policy rule* (rule text, settings applied, how the rule was matched, folded).
+  Evidence is never shown inline: source links open the exact filing page in a right-hand drawer
+  with the passage highlighted. Left rail expands the selected filing's items. ←/→, A, O, Esc.
+- **Decisions** (`app/decisions.py`, `data/decisions/<id>.json`, gitignored): accept, or vote
+  FOR / AGAINST / ABSTAIN / ABSENT with a reason (required when it differs from the policy, for
+  REVIEW items, and always for ABSTAIN/ABSENT). Stale if the recommendation changes later.
+  Bulk-accept passing nominees. Auto-advance to the next open item.
+- **Export** CSV + JSON per filing (`/api/filings/<id>/export.csv|json`); warns if undecided.
 
-**In progress (not yet applied here):** UI rework the user asked for:
-- Clicking an item opens a **full-screen item view** (route `#/filing/<id>/item/<number>`) instead of
-  the side panel: reasoning, evidence, classification, settings, and board rec on the left; the
-  filing page viewer on the right, auto-opened to the main evidence page; prev/next item buttons
-  plus ←/→ keys; Esc back to the overview.
-- The **left rail expands the selected filing** to list all its items (number, short title, vote
-  dot), with "Election of directors" nominees in a collapsible group. Short titles: nominee name;
-  "Say-on-pay"; "Ratify auditor"; otherwise strip "Shareholder Proposal Requesting/Regarding".
-- Remove the side `#panel` from index.html and its CSS.
+UI: desktop web only, no mobile styles (user's call).
 
-Then, still required by the brief:
-1. **Accept / override** per item: override needs a new vote and a reason (required); FLAG items
-   need a decision before the ballot counts as complete. Store decisions server-side (JSON file per
-   filing in data/decisions/, or SQLite) with timestamp; show "changed from policy" state; bulk-accept
-   directors who pass.
-2. **Export** CSV + JSON per filing: company, meeting date, item, board rec, policy rec, rule, page,
-   final vote, changed (y/n), reason, timestamp. Warn if items are undecided.
-3. Let her **correct a fact** (e.g. the wrong fee figure) with method "analyst"; rules re-run. This is
+Still to do:
+1. Let her **correct a fact** (e.g. the wrong fee figure) with method "analyst"; rules re-run. This is
    different from overriding the vote.
-4. Optional: run once with a real ANTHROPIC_API_KEY to replace the stub with cached live answers.
-5. Write the half-page note and README updates; rehearse the demo: override Starbucks Prop 4,
+2. Optional: run once with a real ANTHROPIC_API_KEY to replace the stub with cached live answers.
+3. Write the half-page note and README updates; rehearse the demo: override Starbucks Prop 4,
    decide a flagged shareholder proposal, show why Alphabet Prop 7 is flagged, show the Starbucks
    say-on-pay CEO-change flag and flip the `on_ceo_change` setting.
 

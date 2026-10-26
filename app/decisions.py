@@ -20,7 +20,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-VOTES = ("FOR", "AGAINST", "ABSTAIN")
+VOTES = ("FOR", "AGAINST", "ABSTAIN", "ABSENT")   # ABSENT: not voting the shares
+ALWAYS_EXPLAIN = ("ABSTAIN", "ABSENT")
 _LOCK = threading.Lock()
 
 
@@ -72,8 +73,9 @@ def apply(root: Path, filing: dict, numbers: list[str], action: str,
             if vote not in VOTES:
                 raise ValueError(f"Vote must be one of {', '.join(VOTES)}.")
             chosen = vote
-            if chosen != policy and not reason:
-                raise ValueError("A reason is required when you vote differently from the policy"
+            if (chosen != policy or chosen in ALWAYS_EXPLAIN) and not reason:
+                raise ValueError(f"A reason is required for {chosen}." if chosen in ALWAYS_EXPLAIN
+                                 else "A reason is required when you vote differently from the policy"
                                  if policy != "FLAG" else "A reason is required for a flagged item.")
         else:
             raise ValueError(f"Unknown action: {action}.")

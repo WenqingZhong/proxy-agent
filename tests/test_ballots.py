@@ -100,3 +100,30 @@ class Amazon(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VoteSummary(unittest.TestCase):
+    """What is being voted on: copied verbatim from the item's own section."""
+
+    def test_every_item_has_a_verbatim_summary(self):
+        def squash(t):
+            return " ".join(t.split())
+        for fid in ("starbucks-2026-def14a", "alphabet-2026-def14a", "amazon-2026-def14a"):
+            pages = split_pages((ROOT / "data" / "filings" / f"{fid}.htm").read_text(encoding="utf-8", errors="ignore"))
+            items = extract_ballot(fid, pages).to_dict()["items"]
+            for it in items:
+                s = it["summary"]
+                self.assertIsNotNone(s, f"{fid} {it['number']}")
+                page_text = squash(" ".join(pages[s["page_index"]].lines + pages[min(s["page_index"] + 1, len(pages) - 1)].lines))
+                first = s["quote"].split(" … ")[0].split(" • ")[0]
+                self.assertIn(squash(first), page_text, f"{fid} {it['number']}")
+                if it["proponent"] == "shareholder":
+                    self.assertEqual(it["summary_kind"], "resolution", f"{fid} {it['number']}")
+                    self.assertRegex(s["quote"], r"(?i)^resolved")
+
+    def test_summary_stays_inside_its_own_proposal(self):
+        pages = split_pages((ROOT / "data" / "filings" / "starbucks-2026-def14a.htm").read_text(encoding="utf-8", errors="ignore"))
+        items = {i["number"]: i for i in extract_ballot("starbucks-2026-def14a", pages).to_dict()["items"]}
+        self.assertIn("greater than majority vote", items["4"]["summary"]["quote"])
+        self.assertIn("Chairman", items["5"]["summary"]["quote"])
+        self.assertTrue(items["2"]["summary"]["quote"].startswith("RESOLVED, that the shareholders of Starbucks"))

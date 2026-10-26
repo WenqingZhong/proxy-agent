@@ -6,7 +6,7 @@ const state = {
   filings: [],
   cache: {},            // id -> full filing
   decisions: {},        // id -> { items: {number: {state, final_vote, reason, ...}}, decided, total, undecided }
-  page: null,           // page viewer: { filingId, index, find, kind, pageCount, where: "item"|"overlay" }
+  page: null,           // page drawer: { filingId, index, find, kind, label, pageCount }
   editing: null,        // item number whose vote form is open
   collapsed: {},
 };
@@ -42,14 +42,6 @@ const LLM_MODE = {
 };
 
 const FACT_LABEL = { attendance: "Director attendance", fees: "Auditor fees", pay: "CEO pay & TSR" };
-const METHOD_LABEL = { code: "Read by code", llm: "Read by LLM, quote verified", analyst: "Entered by analyst" };
-const LOCATOR_LABEL = {
-  agree: ["ok", "Keywords + LLM agree on the page"],
-  keywords_only: ["muted", "Keywords only (LLM not used)"],
-  disagree: ["warn", "Keywords and LLM disagree on the page"],
-  llm_only: ["warn", "Found via LLM after keywords missed"],
-  neither: ["warn", "Not found by keywords or LLM"],
-};
 const CLS_LABEL = {
   agreed: ["ok", "Keywords + LLM agree"],
   keywords_only: ["muted", "Keywords only"],
@@ -63,7 +55,9 @@ const STATE_LABEL = {
   stale: "Re-confirm",
   undecided: "Undecided",
 };
-const VOTES = ["FOR", "AGAINST", "ABSTAIN"];
+const VOTES = ["FOR", "AGAINST", "ABSTAIN", "ABSENT"];
+const ALWAYS_EXPLAIN = ["ABSTAIN", "ABSENT"];
+const VOTE_LABEL = { FOR: "FOR", AGAINST: "AGAINST", ABSTAIN: "ABSTAIN", ABSENT: "ABSENT (not voting)" };
 
 // ------------------------------------------------------------------ small pieces
 
@@ -83,12 +77,6 @@ function ruleChip(id) {
   return `<span class="rule ${id}" title="${esc(r ? r.text : "")}">${esc(ruleLabel(id))}</span>`;
 }
 
-function pageBtn(ev, label = "") {
-  if (!ev || ev.page_index == null) return "";
-  return `<button class="src" data-open-page="${ev.page_index}" data-find="${esc(ev.find || ev.quote || "")}"
-            data-kind="${esc(ev.kind || "text")}" title="${esc(label || "Open this page")}">p. ${esc(ev.page)}</button>`;
-}
-
 function chip(kind, text) {
   return `<span class="chip ${kind}">${esc(text)}</span>`;
 }
@@ -104,16 +92,6 @@ function shortTitle(it) {
   if (it.policy_rule === "AUDITOR") return "Ratify auditor";
   return it.title.replace(/^(Stockholder|Shareholder) Proposal\s+(Requesting|Regarding|on|for|to)?\s*(that\s+|an?\s+)?/i, "")
     .replace(/^\w/, (c) => c.toUpperCase());
-}
-
-// The page the recommendation mainly rests on (same order as the export's source_page).
-function mainEvidence(f, it) {
-  for (const name of it.recommendation.facts) {
-    const ev = f.facts[name]?.evidence?.[0];
-    if (ev) return ev;
-  }
-  if (it.board_rec_evidence) return { ...it.board_rec_evidence, find: it.board_rec_evidence.quote };
-  return it.section ? { ...it.section, find: it.section.quote } : null;
 }
 
 const decisionOf = (f, n) => state.decisions[f.id]?.items[n] || { state: "undecided", final_vote: null };
@@ -221,24 +199,6 @@ function itemRow(f, it, sub = false) {
     </tr>`;
 }
 
-function factCard(name, fact) {
-  const ok = fact.status === "found" && fact.locator !== "disagree";
-  const ev = fact.evidence && fact.evidence[0];
-  const loc = LOCATOR_LABEL[fact.locator] || ["muted", ""];
-  let summary = "";
-  if (fact.status === "found") {
-    if (name === "attendance") summary = fact.all_at_least_75 ? "All directors ≥ 75%" : `${(fact.below_75 || []).length} under 75%`;
-    if (name === "fees") summary = `FY${fact.year} fee table`;
-    if (name === "pay") summary = `FY${fact.fiscal_year} pay vs. performance`;
-  } else summary = fact.status === "needs_review" ? "Needs review" : "Not found";
-  return `
-    <div class="fact ${ok ? "" : "bad"}">
-      <div class="fact-top"><span class="fact-name">${esc(FACT_LABEL[name])}</span>${pageBtn(ev)}</div>
-      <div class="fact-val">${esc(summary)}</div>
-      <div class="fact-how">${chip(loc[0], loc[1])}</div>
-    </div>`;
-}
-
 function renderFiling(f) {
   const votes = { FOR: 0, AGAINST: 0, FLAG: 0 };
   for (const it of f.items) votes[it.recommendation.vote]++;
@@ -307,7 +267,6 @@ function renderFiling(f) {
         <a class="btn" href="/api/filings/${encodeURIComponent(f.id)}/export.json" data-export>Export JSON</a>
       </div>
     </div>
-    <div class="facts">${["attendance", "fees", "pay"].map((n) => factCard(n, f.facts[n])).join("")}</div>
     <div class="card">
       <table>
         <thead>
@@ -316,30 +275,33 @@ function renderFiling(f) {
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <p class="hint">Open any item to see how the recommendation was reached, the filing page behind it, and to accept or change it.</p>`;
+    <p class="hint">Open an item to see what it asks, why the policy recommends what it does, and to accept or change the vote.</p>`;
 }
 
 // ------------------------------------------------------------------ item view
 
-function settingText(id) {
+// Where the recommendation comes from in the filing, as links that open the exact passage.
+function sources(f, it) {
+  const out = [];
+  for (const name of it.recommendation.facts) {
+    for (const ev of f.facts[name]?.evidence || []) out.push({ ...ev, label: FACT_LABEL[name] });
+  }
+  if (it.board_rec_evidence) out.push({ ...it.board_rec_evidence, find: it.board_rec_evidence.quote, label: "Board's recommendation" });
+  return out;
+}
+
+function sourceLink(ev) {
+  if (!ev || ev.page_index == null) return "";
+  return `<button class="source" data-open-page="${ev.page_index}" data-find="${esc(ev.find || ev.quote || "")}"
+            data-kind="${esc(ev.kind || "text")}" data-label="${esc(ev.label || "")}">
+            <span>${esc(ev.label || "Filing")}</span><span class="source-page">p. ${esc(ev.page)} →</span></button>`;
+}
+
+function settingLine(id) {
   const s = state.policy.settings.find((x) => x.id === id);
   if (!s) return "";
   const val = s.options[String(s.value)] ?? String(s.value);
   return `<li><b>${esc(s.label)}:</b> ${esc(val)}<div class="why">${esc(s.why)}</div></li>`;
-}
-
-function factEvidence(name, fact) {
-  const loc = LOCATOR_LABEL[fact.locator] || ["muted", ""];
-  const method = METHOD_LABEL[fact.method] || "Not found";
-  const pages = fact.keyword_pages?.length || fact.llm_pages?.length
-    ? `<div class="ev-meta">Keyword pages: ${esc((fact.keyword_pages || []).join(", ") || "none")} · LLM pages: ${esc((fact.llm_pages || []).join(", ") || "none")}</div>` : "";
-  return `
-    <div class="ev">
-      <div class="ev-head"><b>${esc(FACT_LABEL[name])}</b> ${chip(fact.status === "found" ? "ok" : "warn", method)} ${chip(loc[0], loc[1])}</div>
-      ${(fact.evidence || []).map((e) => `<blockquote>${esc(e.quote)} ${pageBtn(e)}</blockquote>`).join("") || `<p class="muted">${esc(fact.note || "Nothing found.")}</p>`}
-      ${fact.note && fact.evidence?.length ? `<div class="ev-meta">${esc(fact.note)}</div>` : ""}
-      ${pages}
-    </div>`;
 }
 
 function voteForm(it, d) {
@@ -353,11 +315,11 @@ function voteForm(it, d) {
         ${VOTES.map((v) => `
           <label class="seg-opt ${v}">
             <input type="radio" name="vote" value="${v}" ${pre === v ? "checked" : ""}>
-            <span>${v}${v === policy ? ` <small>(policy)</small>` : ""}</span>
+            <span>${VOTE_LABEL[v]}${v === policy ? ` <small>(policy)</small>` : ""}</span>
           </label>`).join("")}
       </div>
-      <label class="reason-label" for="reason">Reason <span class="muted" data-reason-hint>${policy === "FLAG" ? "(required)" : "(required if you differ from the policy)"}</span></label>
-      <textarea id="reason" name="reason" rows="3" placeholder="${policy === "FLAG" ? "Why this vote? It goes into the export." : "Why are you changing the policy's vote? It goes into the export."}">${esc(d.reason || "")}</textarea>
+      <label class="reason-label" for="reason">Reason <span class="muted" data-reason-hint>${reasonHint(it, pre)}</span></label>
+      <textarea id="reason" name="reason" rows="3" placeholder="Why this vote? It's saved with the vote and goes into the export.">${esc(d.reason || "")}</textarea>
       <div class="form-err" data-form-err hidden></div>
       <div class="form-actions">
         <button class="btn primary" type="submit">Save vote</button>
@@ -365,6 +327,10 @@ function voteForm(it, d) {
       </div>
     </form>`;
 }
+
+const needsReason = (it, vote) =>
+  it.recommendation.vote === "FLAG" || ALWAYS_EXPLAIN.includes(vote) || (vote && vote !== it.recommendation.vote);
+const reasonHint = (it, vote) => (needsReason(it, vote) ? "(required)" : vote ? "(optional)" : "(required unless you keep the policy vote)");
 
 function decisionBox(f, it) {
   const d = decisionOf(f, it.number);
@@ -385,7 +351,7 @@ function decisionBox(f, it) {
         <div class="decided-top">${voteBadge(d.final_vote, true)} <span class="yv ${d.state}">${esc(STATE_LABEL[d.state])}</span>
           ${d.state === "overridden" ? `<span class="muted">Policy said ${esc(policy)}</span>` : ""}</div>
         ${d.reason ? `<div class="decided-reason">“${esc(d.reason)}”</div>` : ""}
-        <div class="ev-meta">Saved ${esc(new Date(d.decided_at).toLocaleString())}</div>
+        <div class="meta-line">Saved ${esc(new Date(d.decided_at).toLocaleString())}</div>
       </div>
       <div class="form-actions">
         <button class="btn" data-edit="${esc(it.number)}">Change</button>
@@ -398,7 +364,18 @@ function decisionBox(f, it) {
         <button class="btn" data-edit="${esc(it.number)}">Override… <kbd>O</kbd></button>
       </div>`;
   }
-  return `<section class="decision ${d.state}" id="decision"><h4>Your decision</h4>${body}</section>`;
+  return `<section class="block decision ${d.state}" id="decision"><h2>Your decision</h2>${body}</section>`;
+}
+
+function votingOn(it) {
+  const s = it.summary;
+  const lead = it.kind === "director"
+    ? `<p class="lead">Elect <b>${esc(it.title.replace(/^Elect\s+/, ""))}</b> to the board.</p>` : "";
+  if (!s) return `${lead}<p class="muted">Couldn't find the proposal's description in the filing. ${sourceLink({ ...it.section, find: it.section.quote, label: "Open the item's section" })}</p>`;
+  return `
+    ${lead}
+    <blockquote class="filing-quote">${esc(s.quote)}</blockquote>
+    <div class="sources">${sourceLink({ ...s, find: s.quote, label: it.summary_kind === "resolution" ? "The resolution in the filing" : "The proposal in the filing" })}</div>`;
 }
 
 function renderItem(f, it) {
@@ -406,8 +383,10 @@ function renderItem(f, it) {
   const c = it.classification;
   const cl = CLS_LABEL[c.status] || ["muted", c.status];
   const llm = c.llm;
+  const rule = ruleById(r.rule);
   const idx = f.items.indexOf(it);
   const prev = f.items[idx - 1], next = f.items[idx + 1];
+  const src = sources(f, it);
 
   const main = $("#main");
   main.classList.add("full");
@@ -416,7 +395,7 @@ function renderItem(f, it) {
       <header class="iv-head">
         <a class="btn small ghost" href="${filingHref(f)}" title="Back to overview (Esc)">← Overview</a>
         <div class="iv-titles">
-          <div class="kicker">${esc(f.company)} · Item ${esc(it.number)} · ${idx + 1} of ${f.items.length}</div>
+          <div class="kicker">${esc(f.company)} · Item ${esc(it.number)} · ${idx + 1} of ${f.items.length} · ${esc(it.proponent === "shareholder" ? "Shareholder proposal" : "Management proposal")}</div>
           <div class="iv-title">${esc(it.title)}</div>
         </div>
         <div class="iv-nav">
@@ -424,49 +403,45 @@ function renderItem(f, it) {
           <a class="icon-btn ${next ? "" : "disabled"}" ${next ? `href="${itemHref(f, next.number)}"` : ""} title="Next item (→)" aria-label="Next item">›</a>
         </div>
       </header>
-      <div class="iv-body">
-        <div class="iv-left">
-          <section class="verdict ${r.vote}">
-            <div class="verdict-top"><span class="muted">Policy recommends</span> ${voteBadge(r.vote, true)} <span class="verdict-rule">${ruleChip(r.rule)}</span></div>
-            <div class="verdict-head">${esc(r.headline)}</div>
+      <div class="iv-scroll">
+        <div class="iv-col">
+          <section class="block">
+            <h2>What you're voting on</h2>
+            ${votingOn(it)}
+          </section>
+
+          <section class="block rec ${r.vote}">
+            <h2>Recommendation</h2>
+            <div class="rec-grid">
+              <span class="rec-who">Policy</span>
+              <span>${voteBadge(r.vote, true)} <span class="rec-head">${esc(r.headline)}</span></span>
+              <span class="rec-who">Board</span>
+              <span>${recBadge(it.board_rec)} ${differsFromBoard(it) ? chip("warn", "Differs from the policy") : ""}</span>
+            </div>
             ${r.steps.length ? `<ol class="steps">${r.steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>` : ""}
-            ${r.rule !== "FLAG" ? `<div class="policy-quote">Policy: “${esc(ruleById(r.rule)?.text || "")}”</div>` : ""}
+            ${src.length ? `<div class="sources"><span class="sources-label">See it in the filing:</span>${src.map(sourceLink).join("")}</div>` : ""}
           </section>
 
           ${decisionBox(f, it)}
 
-          ${r.facts.length ? `<section><h4>Evidence from the filing</h4>${r.facts.map((n) => factEvidence(n, f.facts[n])).join("")}</section>` : ""}
-
-          ${r.settings.length ? `<section><h4>Policy settings used</h4><ul class="settings">${r.settings.map(settingText).join("")}</ul></section>` : ""}
-
-          <section>
-            <h4>Which rule applies</h4>
-            <div class="ev">
-              <div class="ev-head"><b>${esc(c.label)}</b> ${chip(cl[0], cl[1])}</div>
-              <div class="ev-meta">Keywords: ${esc(c.keyword.category.replace(/_/g, " "))}${c.keyword.direction !== "n/a" ? ` (${esc(c.keyword.direction)})` : ""}
-                · LLM: ${llm ? esc(llm.category.replace(/_/g, " ")) + (llm.direction && llm.direction !== "n/a" ? ` (${esc(llm.direction)})` : "") + ` <span class="muted">[${esc(llm.source)}]</span>` : `<span class="muted">${esc(c.llm_error || "not used")}</span>`}</div>
-              ${llm ? `<div class="ev-meta">LLM reason: ${esc(llm.reason)}</div>
-                       <blockquote>${esc(llm.quote)} ${llm.quote_verified ? pageBtn({ page: llm.page, page_index: llm.page_index, quote: llm.quote }) : chip("warn", "not found in filing")}</blockquote>` : ""}
-              ${c.status !== "agreed" ? `<div class="ev-meta">${esc(c.note)}</div>` : ""}
-            </div>
-          </section>
-
-          <section>
-            <h4>Board recommendation</h4>
-            <div class="ev">
-              <div class="ev-head">${recBadge(it.board_rec)} ${differsFromBoard(it) ? chip("warn", "Policy differs from board") : ""}</div>
-              ${it.board_rec_evidence ? `<blockquote>${esc(it.board_rec_evidence.quote)} ${pageBtn({ ...it.board_rec_evidence, find: it.board_rec_evidence.quote })}</blockquote>` : `<p class="muted">Not found in the filing.</p>`}
-              <div class="ev-meta">Item section starts ${pageBtn({ ...it.section, find: it.section.quote })}</div>
-            </div>
+          <section class="block">
+            <h2>Policy rule</h2>
+            <div class="rule-line">${ruleChip(r.rule)}</div>
+            <p class="rule-text">${r.rule === "FLAG" ? "No rule in the policy covers this item, or a fact the rule needs couldn't be confirmed. Your call." : `“${esc(rule?.text || "")}”`}</p>
+            ${r.settings.length ? `<div class="sub-label">Judgement calls applied (set in the policy)</div><ul class="settings">${r.settings.map(settingLine).join("")}</ul>` : ""}
+            ${c.status !== "agreed" ? `<div class="warn">${esc(c.note)}</div>` : ""}
+            <details class="how">
+              <summary>How the rule was matched ${chip(cl[0], cl[1])}</summary>
+              <div class="meta-line">Keywords say: ${esc(c.keyword.category.replace(/_/g, " "))}${c.keyword.direction !== "n/a" ? ` (${esc(c.keyword.direction)})` : ""}.
+                AI says: ${llm ? esc(llm.category.replace(/_/g, " ")) + (llm.direction && llm.direction !== "n/a" ? ` (${esc(llm.direction)})` : "") + ` <span class="muted">[${esc(llm.source)}]</span>` : `<span class="muted">${esc(c.llm_error || "not used")}</span>`}.</div>
+              ${llm ? `<div class="meta-line">AI's reason: ${esc(llm.reason)}</div>
+                <div class="sources">${llm.quote_verified ? sourceLink({ page: llm.page, page_index: llm.page_index, quote: llm.quote, label: "Passage the AI relied on" }) : chip("warn", "AI's quote not found in the filing")}</div>` : ""}
+            </details>
           </section>
           <p class="hint">Keys: ← → items · A accept · O override · Esc overview</p>
         </div>
-        <div class="iv-right" id="pv"></div>
       </div>
     </div>`;
-  const ev = mainEvidence(f, it);
-  if (ev) openPage(ev.page_index, ev.find || ev.quote, ev.kind || "text", "item");
-  else $("#pv").innerHTML = `<div class="empty">No filing page for this item.</div>`;
 }
 
 function refreshDecision(f, it) {
@@ -495,22 +470,15 @@ function goToNextOpen(f, fromNumber) {
   else { toast("Every item is decided. Ready to export."); location.hash = filingHref(f); }
 }
 
-// ------------------------------------------------------------------ page viewer
+// ------------------------------------------------------------------ page viewer (drawer)
 
-function pageTarget(where) {
-  if (where === "item") return $("#pv");
-  $("#overlay").hidden = false;
-  return $("#overlay .overlay-box");
-}
-
-async function openPage(index, find, kind = "text", where) {
+async function openPage(index, find, kind = "text", label = "") {
   const f = currentFiling();
   if (!f) return;
-  where = where || ($("#pv") ? "item" : "overlay");
   const page = await api(`/api/filings/${encodeURIComponent(f.id)}/pages/${index}`);
-  state.page = { filingId: f.id, index: page.index, find, kind, pageCount: page.page_count, where };
-  const target = pageTarget(where);
-  if (!target) return;
+  state.page = { filingId: f.id, index: page.index, find, kind, label, pageCount: page.page_count };
+  $("#overlay").hidden = false;
+  const target = $("#overlay .overlay-box");
 
   const norm = (s) => s.replace(/(\w)- (\w)/g, "$1$2").replace(/[’]/g, "'").replace(/[“”]/g, '"')
     .replace(/\s+/g, " ").trim().toLowerCase();
@@ -523,16 +491,16 @@ async function openPage(index, find, kind = "text", where) {
   // EDGAR often wraps prose in one-cell tables, so a text quote can land in a table too.
   const tableHit = (rows) => q && rows.some((r) => r.some((c) => (kind === "table" ? norm(c).includes(q) : lineHit(c))));
   const blocks = page.blocks || page.lines.map((text) => ({ t: "p", text }));
-  const title = page.label.startsWith("#")
-    ? `Unnumbered page (${page.index + 1} of ${page.page_count})`
-    : `Page ${page.label} · ${page.index + 1} of ${page.page_count} in file`;
+  const where = page.label.startsWith("#")
+    ? `Unnumbered page (${page.index + 1} of ${page.page_count} in file)`
+    : `Page ${page.label} of the filing`;
   target.innerHTML = `
     <div class="pv-head">
-      <div><div class="kicker">Filing</div><div class="pv-title">${esc(title)}</div></div>
+      <div><div class="kicker">${esc(label || "Filing")}</div><div class="pv-title">${esc(where)}</div></div>
       <div class="pv-actions">
         <button class="icon-btn" data-page-step="-1" title="Previous page" aria-label="Previous page" ${page.index === 0 ? "disabled" : ""}>↑</button>
         <button class="icon-btn" data-page-step="1" title="Next page" aria-label="Next page" ${page.index >= page.page_count - 1 ? "disabled" : ""}>↓</button>
-        ${where === "overlay" ? `<button class="icon-btn" data-close-overlay title="Close (Esc)" aria-label="Close">×</button>` : ""}
+        <button class="icon-btn" data-close-overlay title="Close (Esc)" aria-label="Close">×</button>
       </div>
     </div>
     <div class="pv-body pagetext">${blocks.map((b) => b.t === "table"
@@ -542,12 +510,12 @@ async function openPage(index, find, kind = "text", where) {
   const body = target.querySelector(".pv-body");
   const hitEl = body.querySelector(".hit");
   // Scroll only the page viewer, not the surrounding layout.
-  body.scrollTop = hitEl ? Math.max(0, hitEl.offsetTop - body.clientHeight / 3) : 0;
+  body.scrollTop = hitEl ? Math.max(0, hitEl.offsetTop - body.clientHeight / 4) : 0;
 }
 
 function closeOverlay() {
   $("#overlay").hidden = true;
-  if (state.page?.where === "overlay") state.page = null;
+  state.page = null;
 }
 
 // ------------------------------------------------------------------ policy
@@ -637,13 +605,13 @@ document.addEventListener("click", (e) => {
   const src = t.closest("[data-open-page]");
   if (src) {
     e.preventDefault();
-    openPage(Number(src.dataset.openPage), src.dataset.find, src.dataset.kind);
+    openPage(Number(src.dataset.openPage), src.dataset.find, src.dataset.kind, src.dataset.label);
     return;
   }
   const step = t.closest("[data-page-step]");
   if (step && state.page) {
     const p = state.page;
-    openPage(p.index + Number(step.dataset.pageStep), p.find, p.kind, p.where);
+    openPage(p.index + Number(step.dataset.pageStep), p.find, p.kind, p.label);
     return;
   }
   if (t.closest("[data-close-overlay]") || t.id === "overlay") return closeOverlay();
@@ -699,8 +667,7 @@ document.addEventListener("change", (e) => {
   const f = currentFiling();
   if (!form || !f || e.target.name !== "vote") return;
   const it = f.items.find((x) => x.number === form.dataset.voteForm);
-  const needs = it.recommendation.vote === "FLAG" || e.target.value !== it.recommendation.vote;
-  form.querySelector("[data-reason-hint]").textContent = needs ? "(required)" : "(optional)";
+  form.querySelector("[data-reason-hint]").textContent = reasonHint(it, e.target.value);
 });
 
 document.addEventListener("submit", (e) => {
@@ -714,7 +681,7 @@ document.addEventListener("submit", (e) => {
   const err = form.querySelector("[data-form-err]");
   const fail = (msg) => { err.textContent = msg; err.hidden = false; };
   if (!vote) return fail("Choose a vote.");
-  if ((vote !== it.recommendation.vote || it.recommendation.vote === "FLAG") && !reason.trim())
+  if (needsReason(it, vote) && !reason.trim())
     return fail("Add a reason. It's saved with the vote and goes into the export.");
   saveDecision(f, [it.number], "vote", vote, reason)
     .then((ds) => {

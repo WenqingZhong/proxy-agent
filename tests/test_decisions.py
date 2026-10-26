@@ -75,6 +75,17 @@ class Decisions(unittest.TestCase):
             data = decisions.apply(self.root, f, [n], "vote", "ABSTAIN", "Need more info from the proponent")
             self.assertEqual(decisions.states(f, data)["items"][n]["state"], "decided", fid)
 
+    def test_absent_needs_a_reason(self):
+        for fid, n in (("starbucks-2026-def14a", "3"), ("alphabet-2026-def14a", "7"), ("amazon-2026-def14a", "1a")):
+            f = filing(fid)
+            with self.assertRaises(ValueError):
+                decisions.apply(self.root, f, [n], "vote", "ABSENT", "")
+            data = decisions.apply(self.root, f, [n], "vote", "ABSENT", "Shares on loan; not recalled")
+            st = decisions.states(f, data)["items"][n]
+            self.assertEqual(st["final_vote"], "ABSENT", fid)
+            row = next(r for r in decisions.export_rows(f, data, RULE_NAMES) if r["item"] == n)
+            self.assertEqual((row["final_vote"], row["reason"]), ("ABSENT", "Shares on loan; not recalled"))
+
     def test_bulk_accept_directors(self):
         for fid in FIDS:
             f = filing(fid)
