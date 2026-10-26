@@ -422,3 +422,22 @@ tbody tr.item.active td { background: var(--accent-soft); }
 .export-history { margin-top: 8px; }
 table.mini { width: auto; margin-top: 8px; font-size: 14px; border-collapse: collapse; }
 table.mini td { padding: 4px 16px 4px 0; border: 0; color: var(--ink-2); }
+
+/* ---------- Add a filing by link ---------- */
+.add-filing { padding: 8px 0 0; }
+.add-open {
+  width: 100%; text-align: left; padding: 8px; border-radius: 6px; border: 1px dashed var(--line);
+  background: none; color: var(--accent); cursor: pointer; font-weight: 560;
+}
+.add-open:hover { background: var(--line-2); border-color: var(--accent); }
+.add-form { padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.add-form label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+.add-form input {
+  width: 100%; font: inherit; font-size: 14px; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+}
+.add-form input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent); border-color: var(--accent); }
+.add-hint { font-size: 13px; color: var(--ink-3); margin-top: 6px; }
+.add-form .form-actions { margin-top: 8px; align-items: center; }
+.add-form .form-err { font-size: 13px; }
+.add-conflict { font-size: 13px; margin-top: 6px; padding: 6px 8px; border-radius: 6px; background: var(--flag-bg); color: var(--ink); }

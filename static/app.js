@@ -10,6 +10,7 @@ const state = {
   override: null,       // the vote picked against the policy (or on a flagged item), waiting for a reason
   collapsed: {},
   reports: {},          // id -> what the last re-analysis changed (from the server)
+  adding: { open: false, url: "", busy: false, error: "", conflict: false },   // the Add filing form
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -172,6 +173,47 @@ function renderRail() {
   }).join("");
   const active = $(".rail-item.active");
   if (active) active.scrollIntoView({ block: "nearest" });
+}
+
+// ------------------------------------------------------------------ add a filing by its SEC.gov link
+
+function renderAddFiling() {
+  const a = state.adding;
+  $("#add-filing").innerHTML = !a.open
+    ? `<button class="add-open" data-add-open>+ Add filing</button>`
+    : `<form class="add-form" data-add-form>
+        <label for="add-url">Filing link on SEC.gov</label>
+        <input id="add-url" name="url" type="url" required value="${esc(a.url)}" ${a.busy ? "disabled" : ""}
+               placeholder="https://www.sec.gov/Archives/edgar/data/…/….htm" autocomplete="off">
+        <div class="add-hint">The DEF 14A document itself, not the filing index. It's fetched and analysed right away.</div>
+        ${a.error ? `<div class="${a.conflict ? "add-conflict" : "form-err"}">${esc(a.error)}</div>` : ""}
+        <div class="form-actions">
+          ${a.busy ? `<span class="muted">Fetching and analysing…</span>`
+            : a.conflict ? `<button class="btn primary small" type="button" data-add-replace>Replace</button>`
+            : `<button class="btn primary small" type="submit">Add</button>`}
+          ${a.busy ? "" : `<button class="btn ghost small" type="button" data-add-cancel>Cancel</button>`}
+        </div>
+      </form>`;
+}
+
+async function addFiling(replace = false) {
+  const a = state.adding;
+  Object.assign(a, { busy: true, error: "", conflict: false });
+  renderAddFiling();
+  try {
+    const res = await api("/api/filings", { url: a.url, replace });
+    if (res.reports.length) applyReanalysis(res);
+    else state.filings = res.filings;
+    state.adding = { open: false, url: "", busy: false, error: "", conflict: false };
+    renderAddFiling();
+    toast(`${replace ? "Replaced" : "Added"} ${res.filing.company}: ${res.filing.item_count} items analysed.`);
+    const href = filingHref(res.filing);
+    if (location.hash === href) route();
+    else location.hash = href;
+  } catch (err) {
+    Object.assign(a, { busy: false, error: err.message, conflict: err.status === 409 });
+    renderAddFiling();
+  }
 }
 
 // ------------------------------------------------------------------ filing overview
@@ -706,6 +748,16 @@ async function act(fn) {
 
 document.addEventListener("click", (e) => {
   const t = e.target;
+  if (t.closest("[data-add-open]")) {
+    state.adding.open = true;
+    renderAddFiling();
+    return $("#add-url").focus();
+  }
+  if (t.closest("[data-add-cancel]")) {
+    state.adding = { open: false, url: "", busy: false, error: "", conflict: false };
+    return renderAddFiling();
+  }
+  if (t.closest("[data-add-replace]")) return addFiling(true);
   const tog = t.closest("[data-toggle]");
   if (tog) {
     const key = tog.dataset.toggle;
@@ -787,6 +839,11 @@ document.addEventListener("change", (e) => {
 });
 
 document.addEventListener("submit", (e) => {
+  if (e.target.closest("[data-add-form]")) {
+    e.preventDefault();
+    state.adding.url = $("#add-url").value.trim();
+    return addFiling(false);
+  }
   const form = e.target.closest("[data-vote-form]");
   if (!form) return;
   e.preventDefault();
@@ -829,6 +886,7 @@ window.addEventListener("hashchange", route);
 (async function init() {
   try {
     [state.policy, state.filings] = await Promise.all([api("/api/policy"), api("/api/filings")]);
+    renderAddFiling();
     await route();
   } catch (err) {
     $("#main").innerHTML = `<div class="warn">Couldn't reach the server: ${esc(err.message)}</div>`;

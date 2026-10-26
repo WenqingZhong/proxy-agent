@@ -30,9 +30,19 @@ Force one with `LLM_MODE=live|stub|off`. Model: `ANTHROPIC_MODEL` (default `clau
 
 ### Add a filing
 
-Save the DEF 14A `.htm` from EDGAR into `data/filings/`, and add its EDGAR URL to
-`data/filings/sources.json` so evidence links point at the live filing. Then restart, or change
-a policy setting (which re-analyses every filing).
+In the app: **+ Add filing** in the left rail, paste the DEF 14A document's link on SEC.gov
+(`https://www.sec.gov/Archives/edgar/data/…/….htm`), **Add**. The server fetches it, analyses it
+right away and opens it; evidence links point at that link. If the same company's proxy for the
+same meeting year is already loaded, it offers to replace it (your decisions on it are re-checked).
+
+SEC.gov requires automated downloads to name a contact, so start the server with one:
+
+```bash
+SEC_USER_AGENT="Jane Doe jane@example.com" python3 server.py
+```
+
+Without a network connection or an SEC contact, upload the file instead (`POST /api/filings` with
+`html`, below), or save it into `data/filings/`, add its link to `data/filings/sources.json` and restart.
 
 ## How a recommendation is made
 
@@ -81,8 +91,9 @@ JSON over HTTP on the same port as the app. Only the app's own page may call it:
 `POST` whose `Content-Type` isn't `application/json`.
 
 Errors are `{"error": "<message>"}`: `400` for a request that doesn't make sense (nothing is
-saved), `403` as above, `404` for an unknown filing, export or route, and `409` with
-`"conflict": true` when the recommendation changed since the page was loaded.
+saved), `403` as above, `404` for an unknown filing, export or route, `409` with
+`"conflict": true` when the recommendation changed since the page was loaded (or an upload would
+replace a filing), and `413` for a request body over 25 MB.
 
 `<id>` is a filing id: its file name without `.htm`, e.g. `starbucks-2026-def14a`.
 
@@ -101,14 +112,23 @@ saved), `403` as above, `404` for an unknown filing, export or route, and `409` 
 
 | Method & path | Body | Does |
 |---|---|---|
+| `POST /api/filings` | `{url, replace?}` | Adds a filing by its SEC.gov link: the server fetches it (needs `SEC_USER_AGENT`; only `https://www.sec.gov/Archives/edgar/data/…` documents, redirects checked the same way before they're followed, 25 MB and 60 s limits, HTML only) and analyses it immediately. If the same company (same SEC company number in the link, or same name) already has a filing for that meeting year, this is a replacement of it, which needs `replace: true` (otherwise `409`). Otherwise its id is the company and meeting year (`amazon-2026-def14a`), with the company number added if another company already has that id. A filing is never replaced by a different company's (`400`, uploads too). The link is stored as its `source_url`. Same response as an upload. |
+| `POST /api/filings` | `{filename, html, source_url?, replace?}` | Uploads a filing and analyses it immediately. `html` is the DEF 14A file's contents. The id is `filename` without `.htm`/`.html`, lowercased and reduced to letters, digits and dashes (`Amazon 2026.htm` → `amazon-2026`). If no ballot items are found, nothing is saved (`400`). Otherwise the file is saved to `data/filings/` and the filing is served at once. `source_url` (optional) is its address on SEC.gov, used for the evidence links. A filing with the same id is only replaced with `replace: true`. Her decisions on it are then re-checked, never changed, and `reports` says what moved. Returns `filing` (its summary), `reports` and `filings`; `201` for a new filing, `200` for a replacement. |
 | `POST /api/filings/<id>/decisions` | `{items, action, vote?, reason?, expect}` | Records a decision for each item number in `items`. `action`: `accept` (take the policy's vote), `vote` (`vote` is `FOR` or `AGAINST`; `reason` required when it differs from the policy, and for REVIEW items), `confirm` (keep her earlier vote against the new recommendation), or `clear` (undo). `expect` maps each item number to the policy vote she was shown. It's required for every action except `clear`, and if any differs, nothing is saved and the answer is `409`. Returns the same payload as `GET …/decisions`. |
 | `POST /api/filings/<id>/exports` | `{format: "csv" \| "json"}` | Saves the export with a timestamp and returns `saved` (`id`, which is the timestamp, and `format`), `download` (its URL) and the decisions payload, whose `export.history` lists every saved export. |
 | `POST /api/policy/settings` | `{id, value}` | Saves one policy setting (`value` must be one of its options), then re-analyses every filing. Returns `policy`, `reports` and `filings`. |
 | `POST /api/reanalyze` | `{filing?}` | Reads the filing (or all of them) from disk again and re-runs it with the current settings and AI. Decisions are never changed. Returns `reports` (per filing: `causes`, `recommendations_changed`, `items_added`, `items_removed`, `review`) and `filings`. |
 
-Example:
+Examples:
 
 ```bash
+# upload a filing (python builds the JSON body from the file)
+python3 -c 'import json,sys; print(json.dumps({"filename": "acme-2026-def14a.htm",
+  "html": open(sys.argv[1], encoding="utf-8", errors="ignore").read(),
+  "source_url": "https://www.sec.gov/Archives/edgar/data/123/000012326000001/acme-def14a.htm"}))' \
+  acme-2026-def14a.htm | curl -s localhost:8000/api/filings -H 'Content-Type: application/json' -d @-
+
+# record an override
 curl -s localhost:8000/api/filings/starbucks-2026-def14a/decisions \
   -H 'Content-Type: application/json' \
   -d '{"items": ["4"], "action": "vote", "vote": "AGAINST",
@@ -128,14 +148,15 @@ app/ai.py            LLM jobs: classify, locate, read attendance; quote verifica
 app/classify.py      keywords vs LLM → rule
 app/rules.py         the policy as functions; each reason cites the filing
 app/links.py         citations → SEC.gov text-fragment links
+app/edgar.py         fetch a filing from SEC.gov by its link (strict URL and redirect checks)
 app/policy.py        rules text + settings (changes saved to data/policy_settings.json)
 app/pipeline.py      wires it together
 app/decisions.py     her decisions, re-confirmation after re-analysis, export rows
 app/exports.py       saved exports and whether the latest is outdated
 data/filings/        the filings + sources.json (filing → EDGAR URL)
 static/              front end (plain JS, no build step)
-tests/               91 tests: 3 filings end to end, failure paths, decisions, exports,
-                     re-analysis, links, server request checks
+tests/               110 tests: 3 filings end to end, failure paths, decisions, exports,
+                     re-analysis, links, uploads, server request checks
 ```
 
 Her decisions (`data/decisions/`), saved exports (`data/exports/`), setting changes
