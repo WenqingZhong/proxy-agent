@@ -190,15 +190,28 @@ def _inputs(filing: dict) -> dict | None:
     return {k: v for k, v in run.items() if k != "analyzed_at"} if run else None
 
 
+class Conflict(ValueError):
+    """The recommendation she was looking at isn't the current one any more."""
+
+
 def apply(root: Path, filing: dict, numbers: list[str], action: str,
-          vote: str | None = None, reason: str = "") -> dict:
+          vote: str | None = None, reason: str = "", expect: dict | None = None) -> dict:
     """Record one decision for each item in `numbers`. Raises ValueError with a
-    message she can read if the request doesn't make sense; nothing is saved then."""
+    message she can read if the request doesn't make sense; nothing is saved then.
+
+    expect: {item number: the policy vote she was shown}. If any differs from the
+    current recommendation (a setting changed or the filing was re-analysed while
+    she looked), raises Conflict, so "Accept FOR" can never save an AGAINST."""
     items = {i["number"]: i for i in filing["items"]}
     unknown = [n for n in numbers if n not in items]
     if not numbers or unknown:
         raise ValueError(f"Unknown item(s): {', '.join(unknown) or 'none given'}.")
     reason = (reason or "").strip()
+    if expect is not None and action != "clear":
+        moved = [n for n in numbers if expect.get(n) != items[n]["recommendation"]["vote"]]
+        if moved:
+            raise Conflict("The recommendation changed while you were looking at it "
+                           f"(item {', '.join(moved)}). Nothing was saved; review it again.")
 
     updates = {}
     for n in numbers:

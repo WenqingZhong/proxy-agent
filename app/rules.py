@@ -16,6 +16,7 @@ Missing or unconfirmed inputs always give FLAG, never the default vote.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 RULES_COVER = ("director attendance, say-on-pay, declassifying the board or majority voting, "
                "and auditor ratification")
@@ -97,26 +98,58 @@ def _ev(fact):
 
 # --------------------------------------------------------------------------- #
 
-def directors(name: str, fact: dict, s: dict) -> dict:
+NAME_EXTRAS = {"mr", "mrs", "ms", "miss", "dr", "sir", "dame", "jr", "sr", "ii", "iii", "iv", "phd", "md"}
+
+
+def fold(text: str) -> list[str]:
+    """Lowercase ASCII words: "José Smith, Jr." -> ["jose", "smith", "jr"]."""
+    t = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
+    return re.findall(r"[a-z0-9]+(?:['-][a-z0-9]+)*", t)
+
+
+def surname(name: str) -> str:
+    """The family name, without titles or suffixes: "Robert Smith, Jr." and "Mr. Smith" -> "smith"."""
+    words = [w for w in fold(name) if w not in NAME_EXTRAS]
+    return words[-1] if words else ""
+
+
+def nominee_name(item: dict) -> str:
+    return re.sub(r"^Elect\s+", "", item["title"])
+
+
+def directors(name: str, fact: dict, s: dict, nominees: list[str] | None = None) -> dict:
+    """nominees: everyone on the ballot, so a name the filing gives can be matched to
+    exactly one of them. A name that matches no nominee, or several, is flagged:
+    guessing would put a FOR or AGAINST on the wrong person."""
     ok, why = _fact_ok(fact)
     ev = _ev(fact)
     if not ok:
         return rec("FLAG", "DIRECTORS", "Attendance not confirmed", [step(why, quote_cite(ev))], ["attendance"])
     said = step(f"The filing says: “{ev['quote']}”", quote_cite(ev))
-    last = name.split()[-1].lower().strip(".,")
-    below = [n for n in fact.get("below_75", []) if last in n.lower()]
-    if below:
+    roster = nominees or [name]
+    below = fact.get("below_75") or []
+    matches = {b: [n for n in roster if surname(n) and surname(n) == surname(b)] for b in below}
+    mine = [b for b, ns in matches.items() if ns == [name]]
+    if mine:
         return rec("AGAINST", "DIRECTORS", f"{name} attended fewer than 75% of meetings",
-                   [said, step(f"{below[0]} is named as attending fewer than 75%, so the policy votes against.")],
+                   [said, step(f"{mine[0]} is named as attending fewer than 75%, so the policy votes against.")],
                    ["attendance"])
+    unclear = [b for b, ns in matches.items() if len(ns) != 1]
+    if unclear:
+        b = unclear[0]
+        who = (f"matches more than one nominee ({', '.join(matches[b])})" if matches[b]
+               else "doesn't match any nominee on the ballot")
+        return rec("FLAG", "DIRECTORS", "Can't tell who attended under 75%",
+                   [said, step(f"The filing names {b} as attending fewer than 75%, which {who}. "
+                               f"Check whether that is {name}.")], ["attendance"])
+    if below:
+        return rec("FOR", "DIRECTORS", "Not among directors under 75%",
+                   [said, step(f"The directors named under 75% are {', '.join(below)}. "
+                               f"Each matches another nominee, not {name}.")], ["attendance"])
     if fact.get("all_at_least_75"):
         return rec("FOR", "DIRECTORS", "Attended at least 75% of meetings",
                    [said, step(f"That covers every director, {name} included, and no exception is named. "
                                f"The 75% threshold is met, so the policy supports the nominee.")], ["attendance"])
-    if fact.get("below_75"):
-        return rec("FOR", "DIRECTORS", "Not among directors under 75%",
-                   [said, step(f"The directors named under 75% are {', '.join(fact['below_75'])}. "
-                               f"{name} isn't one of them.")], ["attendance"])
     return rec("FLAG", "DIRECTORS", "Attendance not confirmed",
                [said, step("The statement doesn't settle whether this director met 75%.")], ["attendance"])
 
@@ -257,16 +290,15 @@ def board_structure(item: dict, category: str, s: dict) -> dict:
 
 # --------------------------------------------------------------------------- #
 
-def recommend(item: dict, cls: dict, facts: dict, s: dict) -> dict:
+def recommend(item: dict, cls: dict, facts: dict, s: dict, nominees: list[str] | None = None) -> dict:
     asks = [x for x in [_asks(item)] if x]
     if cls["status"] == "disagree":
         return rec("FLAG", "FLAG", "Unclear which rule applies", asks + [step(cls["note"])])
-    if cls["status"] == "unverified":
+    if cls["status"] in ("unverified", "unconfirmed"):
         return rec("FLAG", "FLAG", "Classification not verified", asks + [step(cls["note"])])
     rule = cls["rule"]
     if rule == "DIRECTORS":
-        name = re.sub(r"^Elect\s+", "", item["title"])
-        return directors(name, facts["attendance"], s)
+        return directors(nominee_name(item), facts["attendance"], s, nominees)
     if rule == "EXEC_PAY":
         return say_on_pay(facts["pay"], s)
     if rule == "AUDITOR":

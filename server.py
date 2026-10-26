@@ -131,10 +131,26 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _from_this_app(self, post: bool) -> bool:
+        """Only the app's own page may use the API. Another site open in her browser could
+        otherwise send a POST here and record votes or change a setting, and a hostname
+        pointed at 127.0.0.1 (DNS rebinding) could read the data."""
+        port = self.server.server_address[1]
+        hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
+        if self.headers.get("Host") not in hosts:
+            return False
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in {f"http://{h}" for h in hosts}:
+            return False
+        # A cross-site form or no-cors fetch can't send JSON without the browser asking first.
+        return not post or (self.headers.get("Content-Type") or "").split(";")[0].strip() == "application/json"
+
     def do_GET(self):
         parts = [p for p in urlparse(self.path).path.split("/") if p]
         if parts[:1] != ["api"]:
             return super().do_GET()
+        if not self._from_this_app(post=False):
+            return self._json({"error": "forbidden"}, 403)
 
         # /api/policy
         if parts == ["api", "policy"]:
@@ -176,6 +192,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parts = [p for p in urlparse(self.path).path.split("/") if p]
+        if not self._from_this_app(post=True):
+            return self._json({"error": "forbidden"}, 403)
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
             # /api/reanalyze  {filing?: id}: re-read filings from disk, re-run with current settings + AI
@@ -193,8 +211,11 @@ class Handler(SimpleHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ["api", "filings"] and parts[3] == "decisions" \
                     and parts[2] in STORE.filings:
                 f = STORE.filings[parts[2]]
+                expect = body.get("expect")
+                if body.get("action") != "clear" and not isinstance(expect, dict):
+                    raise ValueError("Missing the recommendation you were shown (expect).")
                 data = decisions.apply(DECISIONS_DIR, f, body.get("items") or [], body.get("action"),
-                                       body.get("vote"), body.get("reason") or "")
+                                       body.get("vote"), body.get("reason") or "", expect)
                 return self._json(decision_payload(f, data))
             # /api/filings/<id>/exports  {format: csv|json}: save the export, then download it by its id
             if len(parts) == 4 and parts[:2] == ["api", "filings"] and parts[3] == "exports" \
@@ -206,6 +227,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"saved": snap["_export"],
                                    "download": f"/api/filings/{f['id']}/exports/{snap['_export']['id']}.{fmt}",
                                    **decision_payload(f, data)})
+        except decisions.Conflict as e:
+            return self._json({"error": str(e), "conflict": True}, 409)
         except (ValueError, AttributeError) as e:
             return self._json({"error": str(e)}, 400)
         return self._json({"error": "not found"}, 404)

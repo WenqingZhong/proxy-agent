@@ -13,7 +13,7 @@ from facts import find_all, find_attendance, find_fees, find_pay
 from links import Linker
 from pages import split_pages
 from policy import POLICY, SETTINGS
-from rules import recommend
+from rules import fold, nominee_name, recommend, surname
 
 FINDERS = {"attendance": find_attendance, "fees": find_fees, "pay": find_pay}
 
@@ -48,12 +48,17 @@ def _cross_check_facts(filing_id, pages, facts):
     if att["status"] == "needs_review" and att["evidence"]:
         page = pages[att["evidence"][0]["page_index"]]
         ans, err = ai.read_attendance(filing_id, [page])
-        if ans and ans.get("quote_verified") and ans.get("all_at_least_75") is not None:
+        # Every name the LLM lists must be in the quote it gave, or the list isn't trusted.
+        quoted = set(fold(ans.get("quote", ""))) if ans else set()
+        names_ok = bool(ans) and all(surname(n) in quoted for n in ans.get("below_75") or [])
+        if ans and ans.get("quote_verified") and ans.get("all_at_least_75") is not None and names_ok:
             att.update(status="found", method="llm", all_at_least_75=ans["all_at_least_75"],
                        below_75=ans.get("below_75") or [],
                        evidence=[{"page": ans["page"], "page_index": ans["page_index"],
                                   "quote": ans["quote"], "find": ans["quote"]}],
                        note="Read by the LLM; quote checked against the filing.")
+        elif ans and ans.get("quote_verified") and not names_ok:
+            att["note"] += " The LLM named directors who aren't in the sentence it quoted, so its reading isn't trusted."
         elif ans:
             att["note"] += " The LLM's reading couldn't be verified against the filing."
     return facts
@@ -121,17 +126,21 @@ def analyze(filing_id: str, raw_html: str, settings: dict | None = None,
         s0 = it["section"]["page_index"]
         nxt = next((s for s in starts if s > s0), s0 + 3)
         proposals.append({"number": base, "title": it["proposal_title"] or it["title"],
+                          "shareholder": it["proponent"] == "shareholder",
                           "page_indexes": list(range(s0, min(max(nxt, s0 + 1), s0 + 6, len(pages))))})
     llm_cls, cls_err = ai.classify_items(filing_id, proposals, pages)
     by_prop = {p["number"]: merge(p["title"], llm_cls.get(p["number"]), cls_err if not llm_cls else
-                                  ("LLM gave no answer for this item" if p["number"] not in llm_cls else None))
+                                  ("LLM gave no answer for this item" if p["number"] not in llm_cls else None),
+                                  shareholder=p["shareholder"],
+                                  skipped=bool(llm_cls) and p["number"] not in llm_cls)
                for p in proposals}
 
+    nominees = [nominee_name(it) for it in filing["items"] if by_prop[it["proposal"]]["rule"] == "DIRECTORS"]
     for it in filing["items"]:
         cls = by_prop[it["proposal"]]
         it["classification"] = cls
         it["policy_rule"] = cls["rule"]
-        it["recommendation"] = recommend(it, cls, facts, settings)
+        it["recommendation"] = recommend(it, cls, facts, settings, nominees)
     _add_links(filing, pages, source_url)
 
     filing["facts"] = facts

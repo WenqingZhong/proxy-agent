@@ -3,6 +3,8 @@
 Outcome per proposal ("status"):
   agreed         both say the same category (and direction)  -> use it
   keywords_only  LLM unavailable                             -> use keywords, say so
+  unconfirmed    keywords put a shareholder proposal in a rule
+                 with no LLM answer, or the LLM skipped it    -> FLAG for the analyst
   disagree       they differ                                 -> FLAG for the analyst
   unverified     LLM's supporting quote isn't in the filing  -> FLAG for the analyst
 """
@@ -50,7 +52,8 @@ def keyword_category(title: str) -> dict:
     return {"category": cat, "direction": direction}
 
 
-def merge(title: str, llm_answer: dict | None, llm_error: str | None) -> dict:
+def merge(title: str, llm_answer: dict | None, llm_error: str | None,
+          shareholder: bool = False, skipped: bool = False) -> dict:
     kw = keyword_category(title)
     out = {"keyword": kw, "llm": llm_answer, "llm_error": llm_error}
 
@@ -58,13 +61,23 @@ def merge(title: str, llm_answer: dict | None, llm_error: str | None) -> dict:
         rule = RULE_FOR_CATEGORY[cat]
         if cat in ("declassify_board", "majority_voting") and direction != "toward":
             rule, note = "FLAG", note + " The item would move away from the policy's position, which the policy doesn't cover."
-        if status in ("disagree", "unverified"):
+        if status in ("disagree", "unverified", "unconfirmed"):
             rule = "FLAG"
         out.update(category=cat, direction=direction, status=status, note=note,
                    rule=rule, label=CATEGORY_LABEL[cat])
         return out
 
     if not llm_answer:
+        if kw["category"] != "other" and (shareholder or skipped):
+            # Keywords alone would auto-vote this. Shareholder proposals often only sound like a
+            # covered item ("advisory vote on golden parachute pay"), and an item the LLM was
+            # asked about but skipped has no second opinion; both go to her.
+            why = ("the LLM was asked about it but gave no answer" if skipped
+                   else f"the LLM wasn't used ({llm_error or 'unavailable'})")
+            return finish(kw["category"], kw["direction"], "unconfirmed",
+                          f"Keywords suggest {CATEGORY_LABEL[kw['category']]}, but {why}. "
+                          + ("Shareholder proposals often only sound like a covered item, so " if shareholder else "")
+                          + "it isn't voted on keywords alone.")
         return finish(kw["category"], kw["direction"], "keywords_only",
                       f"LLM not used ({llm_error or 'unavailable'}); category from keywords only.")
     if not llm_answer.get("quote_verified"):

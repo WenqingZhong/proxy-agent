@@ -113,6 +113,28 @@ class Decisions(unittest.TestCase):
             with self.assertRaises(ValueError):
                 decisions.apply(self.root, f, *args)
 
+    def test_accept_refuses_a_recommendation_she_was_not_shown(self):
+        for fid in FIDS:
+            f = filing(fid)
+            n = next(i["number"] for i in f["items"] if i["classification"]["category"] == "auditor_ratification")
+            shown = f["items"][[i["number"] for i in f["items"]].index(n)]["recommendation"]["vote"]
+            # She saw AGAINST (before a setting changed), but the recommendation is now FOR.
+            with self.assertRaises(decisions.Conflict, msg=fid):
+                decisions.apply(self.root, f, [n], "accept", expect={n: "AGAINST" if shown == "FOR" else "FOR"})
+            self.assertEqual(decisions.load(self.root, fid), {}, fid)          # nothing saved
+            data = decisions.apply(self.root, f, [n], "accept", expect={n: shown})
+            self.assertEqual(data[n]["vote"], shown, fid)
+
+    def test_bulk_accept_checks_every_item(self):
+        for fid in FIDS:
+            f = filing(fid)
+            nominees = [i["number"] for i in f["items"] if i["proposal"] == "1"]
+            expect = {n: "FOR" for n in nominees}
+            expect[nominees[-1]] = "AGAINST"
+            with self.assertRaises(decisions.Conflict, msg=fid):
+                decisions.apply(self.root, f, nominees, "accept", expect=expect)
+            self.assertEqual(decisions.load(self.root, fid), {}, fid)
+
     def test_clear(self):
         f = filing("amazon-2026-def14a")
         decisions.apply(self.root, f, ["2"], "accept")

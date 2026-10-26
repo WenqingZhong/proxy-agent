@@ -21,7 +21,7 @@ async function api(path, body) {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   } : undefined);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `${res.status} ${path}`);
+  if (!res.ok) throw Object.assign(new Error(data.error || `${res.status} ${path}`), { status: res.status });
   return data;
 }
 
@@ -527,7 +527,18 @@ function refreshDecision(f, it) {
 }
 
 async function saveDecision(f, numbers, action, vote, reason) {
-  const ds = await api(`/api/filings/${encodeURIComponent(f.id)}/decisions`, { items: numbers, action, vote, reason });
+  // The recommendation she is looking at; the server refuses the save if it has changed since.
+  const expect = Object.fromEntries(numbers.map((n) => [n, f.items.find((x) => x.number === n)?.recommendation.vote]));
+  let ds;
+  try {
+    ds = await api(`/api/filings/${encodeURIComponent(f.id)}/decisions`, { items: numbers, action, vote, reason, expect });
+  } catch (err) {
+    if (err.status !== 409) throw err;
+    delete state.cache[f.id];          // reload so she sees the current recommendation
+    await route();
+    toast(err.message);
+    throw Object.assign(err, { handled: true });
+  }
   state.decisions[f.id] = ds;
   const s = state.filings.find((x) => x.id === f.id);
   if (s) { s.decided_count = ds.decided; s.review_count = reviewCount(ds); s.export_outdated = !!ds.export?.outdated; }
@@ -690,7 +701,7 @@ async function route() {
 }
 
 async function act(fn) {
-  try { await fn(); } catch (err) { toast(err.message); }
+  try { await fn(); } catch (err) { if (!err.handled) toast(err.message); }
 }
 
 document.addEventListener("click", (e) => {
@@ -794,7 +805,7 @@ document.addEventListener("submit", (e) => {
       toast(`Item ${it.number}: ${vote} (${STATE_LABEL[s.state].toLowerCase()}).`);
       goToNextOpen(f, it.number);
     })
-    .catch((x) => fail(x.message));
+    .catch((x) => { if (!x.handled) fail(x.message); });
 });
 
 document.addEventListener("keydown", (e) => {

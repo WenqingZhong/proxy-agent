@@ -11,7 +11,10 @@ sys.path.insert(0, str(ROOT / "app"))
 
 import ai  # noqa: E402
 import facts as facts_mod  # noqa: E402
+import llm  # noqa: E402
+import pipeline  # noqa: E402
 import rules  # noqa: E402
+from classify import merge  # noqa: E402
 from pipeline import analyze  # noqa: E402
 from policy import SETTINGS  # noqa: E402
 
@@ -137,7 +140,7 @@ class FailurePaths(unittest.TestCase):
         self.assertEqual(fees["audit"], 37900)
 
     def test_attendance_with_exceptions_goes_to_llm_and_is_verified(self):
-        f, _, pages = run("starbucks-2026-def14a")
+        f, items, pages = run("starbucks-2026-def14a")
         page = pages[f["facts"]["attendance"]["evidence"][0]["page_index"]]
         page.lines.append("Each director attended at least 75% of meetings, except Jane Roe, who attended 60% of meetings.")
         fact = facts_mod.find_attendance([page])
@@ -149,12 +152,106 @@ class FailurePaths(unittest.TestCase):
             got, _ = ai.read_attendance("starbucks-2026-def14a", [page])
         self.assertTrue(got["quote_verified"])
         fact.update(status="found", all_at_least_75=False, below_75=got["below_75"])
-        self.assertEqual(rules.directors("Jane Roe", fact, SETTINGS)["vote"], "AGAINST")
-        self.assertEqual(rules.directors("Ritch Allison", fact, SETTINGS)["vote"], "FOR")
+        noms = [rules.nominee_name(i) for i in items.values() if i["policy_rule"] == "DIRECTORS"] + ["Jane Roe"]
+        self.assertEqual(rules.directors("Jane Roe", fact, SETTINGS, noms)["vote"], "AGAINST")
+        self.assertEqual(rules.directors("Ritch Allison", fact, SETTINGS, noms)["vote"], "FOR")
+        # Jane Roe isn't on the real ballot: a name that matches no nominee is flagged, not ignored.
+        self.assertEqual(rules.directors("Ritch Allison", fact, SETTINGS, noms[:-1])["vote"], "FLAG")
 
     def test_missing_fact_never_defaults_to_for(self):
         r = rules.auditor({"status": "missing", "evidence": [], "note": "No auditor fee table found."}, SETTINGS)
         self.assertEqual(r["vote"], "FLAG")
+
+    def test_llm_names_not_in_its_quote_are_not_trusted(self):
+        f, _, pages = run("starbucks-2026-def14a")
+        page = pages[f["facts"]["attendance"]["evidence"][0]["page_index"]]
+        page.lines.append("Each director attended at least 75% of meetings, except Jane Roe, who attended 60% of meetings.")
+        answer = {"all_at_least_75": False, "below_75": ["Ritch Allison"],          # not who the quote names
+                  "quote": "except Jane Roe, who attended 60% of meetings."}
+        with mock.patch.dict(os.environ, {"LLM_MODE": "stub"}), \
+                mock.patch("llm.stub_answer", lambda fid, task: answer if task == "attendance" else None):
+            facts = pipeline._cross_check_facts("starbucks-2026-def14a", pages, facts_mod.find_all(pages))
+        self.assertEqual(facts["attendance"]["status"], "needs_review")
+        self.assertEqual(rules.directors("Ritch Allison", facts["attendance"], SETTINGS)["vote"], "FLAG")
+
+
+def fact_naming(*below):
+    return {"status": "found", "locator": "agree", "all_at_least_75": False, "below_75": list(below),
+            "evidence": [{"page": "1", "page_index": 0, "quote": "attendance sentence", "find": "x"}]}
+
+
+class DirectorNames(unittest.TestCase):
+    """A name the filing gives must match exactly one nominee, or every nominee is flagged."""
+
+    def vote(self, name, nominees, *below):
+        return rules.directors(name, fact_naming(*below), SETTINGS, nominees)["vote"]
+
+    def test_real_nominees_with_title_or_suffix(self):
+        for fid in RAW:
+            _, items, _ = run(fid)
+            noms = [rules.nominee_name(i) for i in items.values() if i["policy_rule"] == "DIRECTORS"]
+            self.assertGreater(len(noms), 5, fid)
+            target = noms[0]
+            for given in (target, f"Mr. {target.split()[-1]}", f"{target}, Jr."):
+                with self.subTest(fid=fid, given=given):
+                    self.assertEqual(self.vote(target, noms, given), "AGAINST")
+                    for other in noms[1:]:
+                        self.assertEqual(self.vote(other, noms, given),
+                                         "FLAG" if rules.surname(other) == rules.surname(target) else "FOR")
+
+    def test_suffix_on_the_ballot_name(self):
+        noms = ["Robert Smith, Jr.", "Ann Lee"]
+        self.assertEqual(self.vote("Robert Smith, Jr.", noms, "Robert Smith"), "AGAINST")
+        self.assertEqual(self.vote("Ann Lee", noms, "Robert Smith"), "FOR")
+
+    def test_no_substring_matches(self):
+        noms = ["Jon Lee", "Ann Fleet"]
+        self.assertEqual(self.vote("Jon Lee", noms, "Ann Fleet"), "FOR")
+        self.assertEqual(self.vote("Ann Fleet", noms, "Ann Fleet"), "AGAINST")
+
+    def test_unmatched_or_ambiguous_name_flags_everyone(self):
+        noms = ["Jon Lee", "Ann Fleet", "Mary Smith", "Tom Smith"]
+        for n in noms:
+            self.assertEqual(self.vote(n, noms, "Kathleen Moore"), "FLAG")     # matches no nominee
+            self.assertEqual(self.vote(n, noms, "Ms. Smith"), "FLAG")          # matches two
+
+
+class KeywordOnlyClassification(unittest.TestCase):
+    def test_shareholder_proposal_is_not_voted_on_keywords_alone(self):
+        for title in ("Shareholder Proposal Requesting Shareholder Advisory Vote on Golden Parachute Pay",
+                      "Shareholder Proposal to Require Ratification of Auditor Rotation by the Accounting Firm"):
+            m = merge(title, None, "LLM off", shareholder=True)
+            self.assertEqual((m["status"], m["rule"]), ("unconfirmed", "FLAG"), title)
+
+    def test_item_the_llm_skipped_is_flagged(self):
+        m = merge("Ratification of Appointment of Independent Registered Public Accounting Firm", None,
+                  "LLM gave no answer for this item", skipped=True)
+        self.assertEqual((m["status"], m["rule"]), ("unconfirmed", "FLAG"))
+
+    def test_llm_off_all_filings(self):
+        for fid in RAW:
+            _, items, _ = run(fid, LLM_MODE="off")
+            for n, it in items.items():
+                with self.subTest(fid=fid, item=n):
+                    if it["proponent"] == "shareholder":
+                        self.assertEqual(it["recommendation"]["vote"], "FLAG")
+                    elif it["classification"]["category"] in ("director_election", "auditor_ratification"):
+                        self.assertEqual(it["classification"]["status"], "keywords_only")
+                        self.assertEqual(it["recommendation"]["vote"], "FOR")
+
+    def test_llm_skipping_an_item_flags_it(self):
+        for fid in RAW:
+            stub = llm.stub_answer(fid, "classify")
+            _, before, _ = run(fid)
+            auditor = next(n for n, i in before.items() if i["classification"]["category"] == "auditor_ratification")
+            trimmed = {"items": [a for a in stub["items"] if str(a["number"]) != auditor]}
+            real = llm.stub_answer
+            with mock.patch("llm.stub_answer", lambda f, task: trimmed if task == "classify" else real(f, task)):
+                _, items, _ = run(fid)
+            with self.subTest(fid=fid):
+                self.assertEqual(before[auditor]["recommendation"]["vote"], "FOR")
+                self.assertEqual(items[auditor]["classification"]["status"], "unconfirmed")
+                self.assertEqual(items[auditor]["recommendation"]["vote"], "FLAG")
 
 
 if __name__ == "__main__":
