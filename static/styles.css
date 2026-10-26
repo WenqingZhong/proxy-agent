@@ -431,3 +431,14 @@ tbody tr.item.active td { background: var(--accent-soft); }
 }
 .setting.changed select { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .link-btn { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+
+/* ---------- Saved exports ---------- */
+.export-card {
+  background: var(--flag-bg); border: 1px solid color-mix(in srgb, var(--flag) 35%, var(--line));
+  border-radius: 12px; padding: 14px 18px; margin-bottom: 16px;
+}
+.export-card.ok { background: var(--surface); border-color: var(--line); }
+.export-card a { color: var(--accent); }
+.export-history { margin-top: 8px; }
+table.mini { width: auto; margin-top: 8px; font-size: 14px; border-collapse: collapse; }
+table.mini td { padding: 4px 16px 4px 0; border: 0; color: var(--ink-2); }

@@ -172,7 +172,7 @@ function renderRail() {
         <span class="filing-name">${esc(s.company)}</span>
         <span class="filing-sub">
           <span>${esc(s.meeting_date || "Date unknown")}</span>
-          <span>${s.review_count ? `<span class="flags">${s.review_count} to revisit</span> · ` : ""}${s.decided_count}/${s.item_count} decided</span>
+          <span>${s.review_count ? `<span class="flags">${s.review_count} to revisit</span> · ` : ""}${s.export_outdated ? `<span class="flags" title="Votes changed since the last export">export outdated</span> · ` : ""}${s.decided_count}/${s.item_count} decided</span>
         </span>
       </a>
       ${selected && f ? `<div class="rail-items">${railItems(f, route.item)}</div>` : ""}
@@ -214,6 +214,42 @@ function itemLinks(f, numbers) {
 }
 
 // What changed since she decided (from the decisions), plus what the last re-analysis moved.
+const when = (iso) => new Date(iso).toLocaleString();
+const exportUrl = (f, x, fmt) => `/api/filings/${encodeURIComponent(f.id)}/exports/${encodeURIComponent(x.id)}.${fmt}`;
+
+// Her last export vs what she'd export now, and every past export (saved with its time).
+function exportCard(f, ds) {
+  const ex = ds.export;
+  if (!ex?.last) return "";
+  const last = ex.last;
+  const history = `
+    <details class="how export-history">
+      <summary>Export history (${ex.history.length})</summary>
+      <table class="mini">
+        ${ex.history.map((x) => `<tr>
+          <td>${esc(when(x.exported_at))}</td>
+          <td>${esc(x.format.toUpperCase())}</td>
+          <td>${x.decided}/${x.total} decided${x.complete ? "" : ` <span class="muted">(${x.undecided} blank)</span>`}</td>
+          <td><a href="${exportUrl(f, x, "csv")}">CSV</a> · <a href="${exportUrl(f, x, "json")}">JSON</a></td>
+        </tr>`).join("")}
+      </table>
+    </details>`;
+  if (!ex.outdated) {
+    return `<div class="export-card ok"><b>Last export ${esc(when(last.exported_at))} (${esc(last.format.toUpperCase())}) matches your current votes.</b>${history}</div>`;
+  }
+  return `
+    <div class="export-card">
+      <div class="review-head"><b>Your last export (${esc(when(last.exported_at))}, ${esc(last.format.toUpperCase())}) is out of date: ${ex.changes.length} item${ex.changes.length === 1 ? "" : "s"} changed since.</b>
+        <span><button class="btn small" data-export="${esc(last.format)}">Export again</button></span></div>
+      <ul class="review-list">${ex.changes.map((c) => {
+        const it = f.items.find((x) => x.number === c.item);
+        const name = it ? `<a href="${itemHref(f, c.item)}">${esc(c.item)} ${esc(shortTitle(it))}</a>` : `${esc(c.item)} ${esc(c.title)}`;
+        return `<li>${name}: ${c.changes.map(esc).join("; ")}</li>`;
+      }).join("")}</ul>
+      ${history}
+    </div>`;
+}
+
 function reviewBanner(f, ds) {
   const r = ds.review || {};
   const rep = state.reports[f.id];
@@ -306,13 +342,14 @@ function renderFiling(f) {
       <div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div>
       <div class="progress-actions">
         ${nextOpen ? `<a class="btn primary" href="${itemHref(f, nextOpen.number)}">${ds.decided ? "Continue" : "Start review"} → item ${esc(nextOpen.number)}</a>` : ""}
-        <a class="btn" href="/api/filings/${encodeURIComponent(f.id)}/export.csv" data-export>Export CSV</a>
-        <a class="btn" href="/api/filings/${encodeURIComponent(f.id)}/export.json" data-export>Export JSON</a>
+        <button class="btn" data-export="csv">Export CSV</button>
+        <button class="btn" data-export="json">Export JSON</button>
         <button class="btn" data-reanalyse="${esc(f.id)}" title="Read the filing again and re-run every item with the current policy settings and AI. Your decisions are kept and checked against the new recommendations.">Re-analyse</button>
       </div>
       <div class="meta-line run-line">Analysed ${esc(new Date(f.run.analyzed_at).toLocaleString())} · ${esc(f.run.llm_model || LLM_MODE[f.llm_mode]?.label || f.llm_mode)}</div>
     </div>
     ${reviewBanner(f, ds)}
+    ${exportCard(f, ds)}
     <div class="card">
       <table>
         <thead>
@@ -525,7 +562,7 @@ async function saveDecision(f, numbers, action, vote, reason) {
   const ds = await api(`/api/filings/${encodeURIComponent(f.id)}/decisions`, { items: numbers, action, vote, reason });
   state.decisions[f.id] = ds;
   const s = state.filings.find((x) => x.id === f.id);
-  if (s) { s.decided_count = ds.decided; s.review_count = reviewCount(ds); }
+  if (s) { s.decided_count = ds.decided; s.review_count = reviewCount(ds); s.export_outdated = !!ds.export?.outdated; }
   state.editing = null;
   return ds;
 }
@@ -775,8 +812,18 @@ document.addEventListener("click", (e) => {
   const exp = t.closest("[data-export]");
   if (exp && f) {
     const open = state.decisions[f.id].undecided.length;
-    if (open && !confirm(`${open} item${open > 1 ? "s are" : " is"} still undecided. They'll have a blank final vote in the file. Export anyway?`)) e.preventDefault();
-    return;
+    if (open && !confirm(`${open} item${open > 1 ? "s are" : " is"} still undecided. They'll have a blank final vote in the file. Export anyway?`)) return;
+    return act(async () => {
+      // Saved first (with its time, in the export history), then downloaded from the saved copy.
+      const res = await api(`/api/filings/${encodeURIComponent(f.id)}/exports`, { format: exp.dataset.export });
+      const { saved: _saved, download, ...ds } = res;
+      state.decisions[f.id] = ds;
+      const s = state.filings.find((x) => x.id === f.id);
+      if (s) s.export_outdated = false;
+      location.href = download;
+      toast(`Exported ${exp.dataset.export.toUpperCase()}. Saved to the export history.`);
+      renderRail(); renderFiling(f);
+    });
   }
   const bulk = t.closest("[data-bulk-accept]");
   if (bulk && f) {

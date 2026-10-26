@@ -5,3 +5,4 @@ _to_delete/
 data/llm_cache/
 data/decisions/
 data/policy_settings.json
+data/exports/

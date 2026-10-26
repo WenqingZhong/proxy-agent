@@ -37,7 +37,7 @@ one), Alphabet 2026, Amazon 2026.
 
 ```bash
 python3 server.py                  # http://localhost:8000 (port arg optional)
-python3 -m unittest discover tests # 58 tests, all should pass
+python3 -m unittest discover tests # 67 tests, all should pass
 ```
 Python 3.9+ standard library only, no pip installs. That was deliberate: package downloads were
 blocked in the original build environment, and a zero-install app is easy to demo.
@@ -92,8 +92,8 @@ Front end is plain JS/CSS in `static/`, no build step.
 ```
 server.py          stdlib ThreadingHTTPServer; parses all filings at startup.
                    API: GET /api/policy, /api/filings, /api/filings/<id>, /api/filings/<id>/pages/<index>,
-                   /api/filings/<id>/decisions, /api/filings/<id>/export.csv|json;
-                   POST /api/filings/<id>/decisions, /api/reanalyze {filing?}, /api/policy/settings {id, value}
+                   /api/filings/<id>/decisions (states + export status), /api/filings/<id>/exports/<eid>.csv|json;
+                   POST /api/filings/<id>/decisions, /api/filings/<id>/exports {format}, /api/reanalyze {filing?}, /api/policy/settings {id, value}
 app/pages.py       split HTML on CSS page-breaks; printed page number from footer (cleaned to a
                    monotonic sequence); Page.lines, .tables, .tables_html, .blocks (for display);
                    table_grid() is colspan/rowspan-aware
@@ -118,13 +118,15 @@ app/rules.py       directors / say_on_pay / auditor / board_structure / recommen
 app/policy.py      POLICY (rules + settings), SETTINGS (defaults); current_settings() / set_setting()
                    overlay data/policy_settings.json (gitignored); policy_view() for the app
 app/decisions.py   analyst decisions (accept/override/confirm), states, re-analysis diff, CSV/JSON export
+app/exports.py     saved exports in data/exports/<id>/<timestamp>.json (gitignored); history; status()
+                   compares the latest export with what she'd export now
 app/pipeline.py    analyze(filing_id, raw_html, settings) → filing dict + pages; filing["run"] records
                    the inputs (filing hash, settings, LLM mode/model, stub hash)
 data/llm_stub/     hand-written stand-in LLM answers for the 3 samples (categories are a human
                    reading; quotes copied from the filings). Labelled "AI: stub" in the UI. Be
                    upfront about this in the walkthrough.
 tests/             test_ballots.py (extraction, vote summaries), test_decisions.py, test_recommendations.py (facts, recs, failure
-                   paths), test_reanalysis.py, test_llm_client.py (mocked API)
+                   paths), test_reanalysis.py, test_exports.py, test_llm_client.py (mocked API)
 ```
 
 Gotchas found along the way:
@@ -139,7 +141,7 @@ Gotchas found along the way:
 ## Status / next steps
 
 Done: browse filings, ballot, board recs, facts, classification, recommendations, policy page with
-settings, tests (58). Plus:
+settings, tests (67). Plus:
 - **Item view** (`#/filing/<id>/item/<n>`), one column, top to bottom: *What you're voting on*
   (verbatim RESOLVED text, else the section's lead paragraph: `summary` / `summary_kind` from
   `extract._find_summary`), *Recommendation* (policy + board, reasoning steps, source links),
@@ -150,7 +152,12 @@ settings, tests (58). Plus:
   FOR / AGAINST / ABSTAIN / ABSENT with a reason (required when it differs from the policy, for
   REVIEW items, and always for ABSTAIN/ABSENT). Stale if the recommendation changes later.
   Bulk-accept passing nominees. Auto-advance to the next open item.
-- **Export** CSV + JSON per filing (`/api/filings/<id>/export.csv|json`); warns if undecided.
+- **Export** CSV + JSON per filing; warns if undecided. Every export is saved first with its
+  timestamp (`POST /api/filings/<id>/exports`), then downloaded from the saved copy, so past exports
+  re-download exactly as sent (export history on the overview). If her votes, reasons, decision
+  states or the policy recommendations differ from the latest export, the overview says it's out
+  of date and lists what changed per item; the rail shows "export outdated". Timestamp-only changes
+  (re-confirming the same vote) don't count.
 - **Re-analysis** (agreed with the user): when a setting, the filing or the AI changes, every item is
   re-run and her decisions are checked against the new recommendations. Each decision stores an
   item `key` (number + title), a `basis` (vote, rule, category, board rec, settings used, the fact

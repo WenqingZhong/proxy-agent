@@ -20,11 +20,13 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "app"))
 
 import decisions  # noqa: E402
+import exports  # noqa: E402
 from pipeline import analyze  # noqa: E402
 from policy import POLICY, current_settings, policy_view, set_setting  # noqa: E402
 
 FILINGS_DIR = ROOT / "data" / "filings"
 DECISIONS_DIR = ROOT / "data" / "decisions"
+EXPORTS_DIR = ROOT / "data" / "exports"
 RULE_NAMES = {r["id"]: r["section"] for r in POLICY["rules"]}
 STATIC_DIR = ROOT / "static"
 
@@ -79,7 +81,9 @@ class Store:
         out = []
         for f in self.filings.values():
             items = f["items"]
-            st = decisions.states(f, decisions.load(DECISIONS_DIR, f["id"]))
+            data = decisions.load(DECISIONS_DIR, f["id"])
+            st = decisions.states(f, data)
+            ex = exports.status(EXPORTS_DIR, f, data, RULE_NAMES)
             out.append({
                 "id": f["id"],
                 "company": f["company"],
@@ -89,6 +93,7 @@ class Store:
                 "flag_count": sum(1 for i in items if i["recommendation"]["vote"] == "FLAG"),
                 "decided_count": st["decided"],
                 "review_count": sum(len(v) for v in st["review"].values()),
+                "export_outdated": ex["outdated"],
                 "llm_mode": f["llm_mode"],
                 "warnings": f["warnings"],
             })
@@ -96,6 +101,11 @@ class Store:
 
 
 STORE = Store()
+
+
+def decision_payload(f: dict, data: dict) -> dict:
+    """Decision states plus whether her last export still matches them."""
+    return {**decisions.states(f, data), "export": exports.status(EXPORTS_DIR, f, data, RULE_NAMES)}
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -134,18 +144,17 @@ class Handler(SimpleHTTPRequestHandler):
         if len(parts) == 3 and parts[1] == "filings":
             f = STORE.filings.get(parts[2])
             return self._json(f) if f else self._json({"error": "not found"}, 404)
-        # /api/filings/<id>/decisions  and  /api/filings/<id>/export.csv|json
-        if len(parts) == 4 and parts[1] == "filings" and parts[2] in STORE.filings:
-            f, fid = STORE.filings[parts[2]], parts[2]
-            data = decisions.load(DECISIONS_DIR, fid)
-            if parts[3] == "decisions":
-                return self._json(decisions.states(f, data))
-            if parts[3] == "export.csv":
-                body = decisions.to_csv(decisions.export_rows(f, data, RULE_NAMES))
-                return self._send(body.encode("utf-8-sig"), "text/csv; charset=utf-8", filename=f"{fid}-votes.csv")
-            if parts[3] == "export.json":
-                return self._json(decisions.to_json(f, data, RULE_NAMES, policy_view(f["settings"])),
-                                  filename=f"{fid}-votes.json")
+        # /api/filings/<id>/decisions  (states + export status)
+        if len(parts) == 4 and parts[1] == "filings" and parts[2] in STORE.filings and parts[3] == "decisions":
+            return self._json(decision_payload(STORE.filings[parts[2]], decisions.load(DECISIONS_DIR, parts[2])))
+        # /api/filings/<id>/exports/<export id>.csv|json  (a saved export, exactly as it was)
+        if len(parts) == 5 and parts[1] == "filings" and parts[3] == "exports":
+            eid, _, fmt = parts[4].rpartition(".")
+            snap = exports.get(EXPORTS_DIR, parts[2], eid)
+            if not snap or fmt not in exports.FORMATS:
+                return self._json({"error": "not found"}, 404)
+            body, ctype = exports.as_file(snap, fmt)
+            return self._send(body, ctype, filename=f"{parts[2]}-votes-{eid}.{fmt}")
         # /api/filings/<id>/pages/<index>
         if len(parts) == 5 and parts[1] == "filings" and parts[3] == "pages":
             pages = STORE.pages.get(parts[2])
@@ -184,7 +193,17 @@ class Handler(SimpleHTTPRequestHandler):
                 f = STORE.filings[parts[2]]
                 data = decisions.apply(DECISIONS_DIR, f, body.get("items") or [], body.get("action"),
                                        body.get("vote"), body.get("reason") or "")
-                return self._json(decisions.states(f, data))
+                return self._json(decision_payload(f, data))
+            # /api/filings/<id>/exports  {format: csv|json}: save the export, then download it by its id
+            if len(parts) == 4 and parts[:2] == ["api", "filings"] and parts[3] == "exports" \
+                    and parts[2] in STORE.filings:
+                f = STORE.filings[parts[2]]
+                data = decisions.load(DECISIONS_DIR, f["id"])
+                fmt = body.get("format")
+                snap = exports.record(EXPORTS_DIR, f, data, RULE_NAMES, policy_view(f["settings"]), fmt)
+                return self._json({"saved": snap["_export"],
+                                   "download": f"/api/filings/{f['id']}/exports/{snap['_export']['id']}.{fmt}",
+                                   **decision_payload(f, data)})
         except (ValueError, AttributeError) as e:
             return self._json({"error": str(e)}, 400)
         return self._json({"error": "not found"}, 404)
