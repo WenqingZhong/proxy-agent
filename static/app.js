@@ -1,11 +1,13 @@
 // Proxy Agent front end: plain JS, no build step.
-// Routes: #/filing/<id>  and  #/policy
+// Routes: #/filing/<id>   #/filing/<id>/item/<number>   #/policy
 
 const state = {
   policy: null,
   filings: [],
   cache: {},            // id -> full filing
-  panel: null,          // { mode: "item"|"page", filingId, itemNumber, page: {...}, quote }
+  decisions: {},        // id -> { items: {number: {state, final_vote, reason, ...}}, decided, total, undecided }
+  page: null,           // page viewer: { filingId, index, find, kind, pageCount, where: "item"|"overlay" }
+  editing: null,        // item number whose vote form is open
   collapsed: {},
 };
 
@@ -13,18 +15,25 @@ const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-async function api(path) {
-  const res = await fetch(path);
-  if (!res.ok) throw new Error(`${res.status} ${path}`);
-  return res.json();
+async function api(path, body) {
+  const res = await fetch(path, body ? {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  } : undefined);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `${res.status} ${path}`);
+  return data;
 }
 
 const ruleById = (id) => state.policy.rules.find((r) => r.id === id);
 const ruleLabel = (id) => (id === "FLAG" ? "Flag for review" : (ruleById(id)?.section ?? id));
-const currentFiling = () => {
-  const m = location.hash.match(/^#\/filing\/(.+)$/);
-  return m ? state.cache[decodeURIComponent(m[1])] : null;
+const parseRoute = () => {
+  const m = location.hash.match(/^#\/filing\/([^/]+)(?:\/item\/([^/]+))?$/);
+  return m ? { filingId: decodeURIComponent(m[1]), item: m[2] ? decodeURIComponent(m[2]) : null } : null;
 };
+const currentFiling = () => { const r = parseRoute(); return r ? state.cache[r.filingId] : null; };
+const itemHref = (f, n) => `#/filing/${encodeURIComponent(f.id)}/item/${encodeURIComponent(n)}`;
+const filingHref = (f) => `#/filing/${encodeURIComponent(f.id)}`;
+const typing = (e) => e.target.matches("input, textarea, select, [contenteditable]");
 
 const LLM_MODE = {
   live: { label: "AI: live", title: "Classification and page-finding cross-checked with Claude." },
@@ -47,6 +56,14 @@ const CLS_LABEL = {
   disagree: ["warn", "Keywords and LLM disagree"],
   unverified: ["warn", "LLM quote not found in filing"],
 };
+const STATE_LABEL = {
+  accepted: "Accepted policy",
+  overridden: "Changed from policy",
+  decided: "Your decision",
+  stale: "Re-confirm",
+  undecided: "Undecided",
+};
+const VOTES = ["FOR", "AGAINST", "ABSTAIN"];
 
 // ------------------------------------------------------------------ small pieces
 
@@ -81,26 +98,48 @@ function differsFromBoard(it) {
   return (v === "FOR" || v === "AGAINST") && (it.board_rec === "FOR" || it.board_rec === "AGAINST") && v !== it.board_rec;
 }
 
-// ------------------------------------------------------------------ rail
-
-function renderRail() {
-  const route = location.hash;
-  $("#policy-count").textContent = `${state.policy.rules.length} rules`;
-  $("#nav-policy").classList.toggle("active", route === "#/policy");
-  $("#filing-count").textContent = state.filings.length;
-  $("#filing-list").innerHTML = state.filings.map((f) => `
-    <li>
-      <a class="filing-link ${route === `#/filing/${f.id}` ? "active" : ""}" href="#/filing/${encodeURIComponent(f.id)}">
-        <span class="filing-name">${esc(f.company)}</span>
-        <span class="filing-sub">
-          <span>${esc(f.meeting_date || "Date unknown")}</span>
-          <span>${f.item_count} items${f.flag_count ? ` · <span class="flags">${f.flag_count} to review</span>` : ""}</span>
-        </span>
-      </a>
-    </li>`).join("");
+function shortTitle(it) {
+  if (it.kind === "director") return it.title.replace(/^Elect\s+/, "");
+  if (it.policy_rule === "EXEC_PAY") return "Say-on-pay";
+  if (it.policy_rule === "AUDITOR") return "Ratify auditor";
+  return it.title.replace(/^(Stockholder|Shareholder) Proposal\s+(Requesting|Regarding|on|for|to)?\s*(that\s+|an?\s+)?/i, "")
+    .replace(/^\w/, (c) => c.toUpperCase());
 }
 
-// ------------------------------------------------------------------ filing
+// The page the recommendation mainly rests on (same order as the export's source_page).
+function mainEvidence(f, it) {
+  for (const name of it.recommendation.facts) {
+    const ev = f.facts[name]?.evidence?.[0];
+    if (ev) return ev;
+  }
+  if (it.board_rec_evidence) return { ...it.board_rec_evidence, find: it.board_rec_evidence.quote };
+  return it.section ? { ...it.section, find: it.section.quote } : null;
+}
+
+const decisionOf = (f, n) => state.decisions[f.id]?.items[n] || { state: "undecided", final_vote: null };
+
+function yourVote(f, it) {
+  const d = decisionOf(f, it.number);
+  if (d.state === "stale") return `<span class="yv stale" title="${esc(d.note)}">Re-confirm</span>`;
+  if (!d.final_vote) return `<span class="yv none">—</span>`;
+  return `${voteBadge(d.final_vote)} <span class="yv ${d.state}">${esc(STATE_LABEL[d.state])}</span>`;
+}
+
+function dotFor(f, it) {
+  const d = decisionOf(f, it.number);
+  const v = d.final_vote || it.recommendation.vote;
+  return `<span class="dot ${v} ${d.final_vote ? "done" : ""} ${d.state}" title="${esc(STATE_LABEL[d.state])}"></span>`;
+}
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { t.hidden = true; }, 2600);
+}
+
+// ------------------------------------------------------------------ rail
 
 function groupItems(items) {
   const groups = [];
@@ -113,12 +152,60 @@ function groupItems(items) {
   return groups;
 }
 
+function railItems(f, activeItem) {
+  return groupItems(f.items).map((g) => {
+    const link = (it, sub) => `
+      <a class="rail-item ${sub ? "sub" : ""} ${activeItem === it.number ? "active" : ""}" href="${itemHref(f, it.number)}">
+        <span class="rail-num">${esc(it.number)}</span>
+        <span class="rail-title">${esc(shortTitle(it))}</span>
+        ${dotFor(f, it)}
+      </a>`;
+    if (!g.isGroup) return link(g.items[0], false);
+    const key = `rail:${f.id}:${g.base}`;
+    const holdsActive = g.items.some((it) => it.number === activeItem);
+    const collapsed = state.collapsed[key] ?? !holdsActive;
+    const done = g.items.filter((it) => decisionOf(f, it.number).final_vote).length;
+    return `
+      <button class="rail-group" data-toggle="${esc(key)}" data-default="${collapsed}">
+        <span class="caret">${collapsed ? "▸" : "▾"}</span>
+        <span class="rail-title">Election of directors</span>
+        <span class="rail-count">${done}/${g.items.length}</span>
+      </button>
+      ${collapsed ? "" : g.items.map((it) => link(it, true)).join("")}`;
+  }).join("");
+}
+
+function renderRail() {
+  const route = parseRoute();
+  $("#policy-count").textContent = `${state.policy.rules.length} rules`;
+  $("#nav-policy").classList.toggle("active", location.hash === "#/policy");
+  $("#filing-count").textContent = state.filings.length;
+  $("#filing-list").innerHTML = state.filings.map((s) => {
+    const selected = route && route.filingId === s.id;
+    const f = state.cache[s.id];
+    return `
+    <li>
+      <a class="filing-link ${selected && !route.item ? "active" : ""} ${selected ? "selected" : ""}" href="${filingHref(s)}">
+        <span class="filing-name">${esc(s.company)}</span>
+        <span class="filing-sub">
+          <span>${esc(s.meeting_date || "Date unknown")}</span>
+          <span>${s.decided_count}/${s.item_count} decided</span>
+        </span>
+      </a>
+      ${selected && f ? `<div class="rail-items">${railItems(f, route.item)}</div>` : ""}
+    </li>`;
+  }).join("");
+  const active = $(".rail-item.active");
+  if (active) active.scrollIntoView({ block: "nearest" });
+}
+
+// ------------------------------------------------------------------ filing overview
+
 function itemRow(f, it, sub = false) {
   const r = it.recommendation;
-  const active = state.panel && state.panel.itemNumber === it.number ? "active" : "";
   const diff = differsFromBoard(it) ? `<span class="diff" title="Policy differs from the board's recommendation">≠ board</span>` : "";
   return `
-    <tr class="item ${active}" data-item="${esc(it.number)}" tabindex="0">
+    <tr class="item" data-href="${itemHref(f, it.number)}" tabindex="0">
       <td class="num">${esc(it.number)}</td>
       <td class="title">
         <div class="item-title">${esc(it.title)}</div>
@@ -129,7 +216,8 @@ function itemRow(f, it, sub = false) {
         <div class="rec-line">${voteBadge(r.vote)} ${diff}</div>
         <div class="rec-why">${esc(r.headline)}</div>
       </td>
-      <td>${ruleChip(it.policy_rule)}</td>
+      <td class="rulec">${ruleChip(it.policy_rule)}</td>
+      <td class="yourc">${yourVote(f, it)}</td>
     </tr>`;
 }
 
@@ -156,6 +244,9 @@ function renderFiling(f) {
   for (const it of f.items) votes[it.recommendation.vote]++;
   const diffs = f.items.filter(differsFromBoard).length;
   const mode = LLM_MODE[f.llm_mode] || LLM_MODE.off;
+  const ds = state.decisions[f.id];
+  const pct = Math.round((100 * ds.decided) / ds.total);
+  const nextOpen = f.items.find((it) => !decisionOf(f, it.number).final_vote);
 
   const rows = groupItems(f.items).map((g) => {
     if (!g.isGroup) return itemRow(f, g.items[0]);
@@ -164,18 +255,27 @@ function renderFiling(f) {
     const gv = { FOR: 0, AGAINST: 0, FLAG: 0 };
     g.items.forEach((it) => gv[it.recommendation.vote]++);
     const summary = Object.entries(gv).filter(([, n]) => n).map(([v, n]) => `${n} ${v === "FLAG" ? "review" : v}`).join(" · ");
+    const passing = g.items.filter((it) => it.recommendation.vote === "FOR" && !decisionOf(f, it.number).final_vote);
     return `
       <tr class="group">
-        <td colspan="5">
-          <button class="toggle" data-toggle="${esc(key)}" aria-label="Toggle">${collapsed ? "▸" : "▾"}</button>
-          Proposal ${esc(g.base)} · Election of directors
-          <span class="group-count">${g.items.length} nominees · ${summary}</span>
+        <td colspan="6">
+          <div class="group-row">
+            <span>
+              <button class="toggle" data-toggle="${esc(key)}" aria-label="Toggle">${collapsed ? "▸" : "▾"}</button>
+              Proposal ${esc(g.base)} · Election of directors
+              <span class="group-count">${g.items.length} nominees · ${summary}</span>
+            </span>
+            ${passing.length ? `<button class="btn small" data-bulk-accept="${esc(passing.map((it) => it.number).join(","))}"
+                 title="Accept the policy's FOR for every nominee who passes the attendance rule">Accept ${passing.length} passing nominee${passing.length > 1 ? "s" : ""}</button>` : ""}
+          </div>
         </td>
       </tr>
       ${collapsed ? "" : g.items.map((it) => itemRow(f, it, true)).join("")}`;
   }).join("");
 
-  $("#main").innerHTML = `
+  const main = $("#main");
+  main.classList.remove("full");
+  main.innerHTML = `
     <div class="page-head">
       <div>
         <div class="kicker">DEF 14A · Annual meeting <span class="mode ${f.llm_mode}" title="${esc(mode.title)}">${esc(mode.label)}</span></div>
@@ -194,19 +294,32 @@ function renderFiling(f) {
       </div>
     </div>
     ${f.warnings.length ? `<div class="warn">${f.warnings.map(esc).join("<br>")}</div>` : ""}
+    <div class="progress-card">
+      <div class="progress-text">
+        <b>${ds.decided} of ${ds.total} decided</b>
+        ${ds.overridden ? `<span class="muted"> · ${ds.overridden} changed from policy</span>` : ""}
+        ${ds.undecided.length ? `<span class="muted"> · ${ds.undecided.length} still open</span>` : `<span class="ok-text"> · Ballot complete</span>`}
+      </div>
+      <div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div>
+      <div class="progress-actions">
+        ${nextOpen ? `<a class="btn primary" href="${itemHref(f, nextOpen.number)}">${ds.decided ? "Continue" : "Start review"} → item ${esc(nextOpen.number)}</a>` : ""}
+        <a class="btn" href="/api/filings/${encodeURIComponent(f.id)}/export.csv" data-export>Export CSV</a>
+        <a class="btn" href="/api/filings/${encodeURIComponent(f.id)}/export.json" data-export>Export JSON</a>
+      </div>
+    </div>
     <div class="facts">${["attendance", "fees", "pay"].map((n) => factCard(n, f.facts[n])).join("")}</div>
     <div class="card">
       <table>
         <thead>
-          <tr><th>#</th><th>Ballot item</th><th>Board</th><th>Recommendation</th><th>Policy rule</th></tr>
+          <tr><th>#</th><th>Ballot item</th><th>Board</th><th>Recommendation</th><th>Policy rule</th><th>Your vote</th></tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <p class="hint">Click any row to see how the recommendation was reached and the filing text behind it.</p>`;
+    <p class="hint">Open any item to see how the recommendation was reached, the filing page behind it, and to accept or change it.</p>`;
 }
 
-// ------------------------------------------------------------------ item detail panel
+// ------------------------------------------------------------------ item view
 
 function settingText(id) {
   const s = state.policy.settings.find((x) => x.id === id);
@@ -229,78 +342,175 @@ function factEvidence(name, fact) {
     </div>`;
 }
 
-function renderItemPanel(f, it) {
+function voteForm(it, d) {
+  const policy = it.recommendation.vote;
+  const pre = d.final_vote || d.final_vote_then;
+  const cancellable = policy !== "FLAG" || d.final_vote || d.state === "stale";
+  return `
+    <form class="vote-form" data-vote-form="${esc(it.number)}">
+      <div class="vote-label">${policy === "FLAG" ? "The policy doesn't decide this one. Your vote:" : "Your vote:"}</div>
+      <div class="seg" role="radiogroup">
+        ${VOTES.map((v) => `
+          <label class="seg-opt ${v}">
+            <input type="radio" name="vote" value="${v}" ${pre === v ? "checked" : ""}>
+            <span>${v}${v === policy ? ` <small>(policy)</small>` : ""}</span>
+          </label>`).join("")}
+      </div>
+      <label class="reason-label" for="reason">Reason <span class="muted" data-reason-hint>${policy === "FLAG" ? "(required)" : "(required if you differ from the policy)"}</span></label>
+      <textarea id="reason" name="reason" rows="3" placeholder="${policy === "FLAG" ? "Why this vote? It goes into the export." : "Why are you changing the policy's vote? It goes into the export."}">${esc(d.reason || "")}</textarea>
+      <div class="form-err" data-form-err hidden></div>
+      <div class="form-actions">
+        <button class="btn primary" type="submit">Save vote</button>
+        ${cancellable ? `<button class="btn" type="button" data-cancel-edit>Cancel</button>` : ""}
+      </div>
+    </form>`;
+}
+
+function decisionBox(f, it) {
+  const d = decisionOf(f, it.number);
+  const policy = it.recommendation.vote;
+  const editing = state.editing === it.number || (!d.final_vote && policy === "FLAG");
+  let body;
+  if (d.state === "stale" && state.editing !== it.number) {
+    body = `
+      <div class="warn">${esc(d.note)} You voted <b>${esc(d.final_vote_then || "")}</b>${d.reason ? `: “${esc(d.reason)}”` : ""}.</div>
+      ${policy === "FLAG" ? voteForm(it, d) : `<div class="form-actions">
+        <button class="btn primary" data-accept="${esc(it.number)}">Accept ${esc(policy)} <kbd>A</kbd></button>
+        <button class="btn" data-edit="${esc(it.number)}">Choose another vote <kbd>O</kbd></button></div>`}`;
+  } else if (editing) {
+    body = voteForm(it, d);
+  } else if (d.final_vote) {
+    body = `
+      <div class="decided">
+        <div class="decided-top">${voteBadge(d.final_vote, true)} <span class="yv ${d.state}">${esc(STATE_LABEL[d.state])}</span>
+          ${d.state === "overridden" ? `<span class="muted">Policy said ${esc(policy)}</span>` : ""}</div>
+        ${d.reason ? `<div class="decided-reason">“${esc(d.reason)}”</div>` : ""}
+        <div class="ev-meta">Saved ${esc(new Date(d.decided_at).toLocaleString())}</div>
+      </div>
+      <div class="form-actions">
+        <button class="btn" data-edit="${esc(it.number)}">Change</button>
+        <button class="btn ghost" data-clear="${esc(it.number)}">Undo decision</button>
+      </div>`;
+  } else {
+    body = `
+      <div class="form-actions">
+        <button class="btn primary" data-accept="${esc(it.number)}">Accept ${esc(policy)} <kbd>A</kbd></button>
+        <button class="btn" data-edit="${esc(it.number)}">Override… <kbd>O</kbd></button>
+      </div>`;
+  }
+  return `<section class="decision ${d.state}" id="decision"><h4>Your decision</h4>${body}</section>`;
+}
+
+function renderItem(f, it) {
   const r = it.recommendation;
   const c = it.classification;
   const cl = CLS_LABEL[c.status] || ["muted", c.status];
   const llm = c.llm;
-  $("#panel-kicker").textContent = `${f.company} · Item ${it.number}`;
-  $("#panel-title").textContent = it.title;
-  $("#panel-back").hidden = true;
-  $("#page-prev").hidden = $("#page-next").hidden = true;
+  const idx = f.items.indexOf(it);
+  const prev = f.items[idx - 1], next = f.items[idx + 1];
 
-  $("#panel-body").innerHTML = `
-    <section class="verdict ${r.vote}">
-      <div class="verdict-top">${voteBadge(r.vote, true)} <span class="verdict-rule">${ruleChip(r.rule)}</span></div>
-      <div class="verdict-head">${esc(r.headline)}</div>
-      ${r.steps.length ? `<ol class="steps">${r.steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>` : ""}
-      ${r.rule !== "FLAG" ? `<div class="policy-quote">Policy: “${esc(ruleById(r.rule)?.text || "")}”</div>` : ""}
-    </section>
+  const main = $("#main");
+  main.classList.add("full");
+  main.innerHTML = `
+    <div class="iv">
+      <header class="iv-head">
+        <a class="btn small ghost" href="${filingHref(f)}" title="Back to overview (Esc)">← Overview</a>
+        <div class="iv-titles">
+          <div class="kicker">${esc(f.company)} · Item ${esc(it.number)} · ${idx + 1} of ${f.items.length}</div>
+          <div class="iv-title">${esc(it.title)}</div>
+        </div>
+        <div class="iv-nav">
+          <a class="icon-btn ${prev ? "" : "disabled"}" ${prev ? `href="${itemHref(f, prev.number)}"` : ""} title="Previous item (←)" aria-label="Previous item">‹</a>
+          <a class="icon-btn ${next ? "" : "disabled"}" ${next ? `href="${itemHref(f, next.number)}"` : ""} title="Next item (→)" aria-label="Next item">›</a>
+        </div>
+      </header>
+      <div class="iv-body">
+        <div class="iv-left">
+          <section class="verdict ${r.vote}">
+            <div class="verdict-top"><span class="muted">Policy recommends</span> ${voteBadge(r.vote, true)} <span class="verdict-rule">${ruleChip(r.rule)}</span></div>
+            <div class="verdict-head">${esc(r.headline)}</div>
+            ${r.steps.length ? `<ol class="steps">${r.steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>` : ""}
+            ${r.rule !== "FLAG" ? `<div class="policy-quote">Policy: “${esc(ruleById(r.rule)?.text || "")}”</div>` : ""}
+          </section>
 
-    ${r.facts.length ? `<section><h4>Evidence from the filing</h4>${r.facts.map((n) => factEvidence(n, f.facts[n])).join("")}</section>` : ""}
+          ${decisionBox(f, it)}
 
-    <section>
-      <h4>Which rule applies</h4>
-      <div class="ev">
-        <div class="ev-head"><b>${esc(c.label)}</b> ${chip(cl[0], cl[1])}</div>
-        <div class="ev-meta">Keywords: ${esc(c.keyword.category.replace(/_/g, " "))}${c.keyword.direction !== "n/a" ? ` (${esc(c.keyword.direction)})` : ""}
-          · LLM: ${llm ? esc(llm.category.replace(/_/g, " ")) + (llm.direction && llm.direction !== "n/a" ? ` (${esc(llm.direction)})` : "") + ` <span class="muted">[${esc(llm.source)}]</span>` : `<span class="muted">${esc(c.llm_error || "not used")}</span>`}</div>
-        ${llm ? `<div class="ev-meta">LLM reason: ${esc(llm.reason)}</div>
-                 <blockquote>${esc(llm.quote)} ${llm.quote_verified ? pageBtn({ page: llm.page, page_index: llm.page_index, quote: llm.quote }) : chip("warn", "not found in filing")}</blockquote>` : ""}
-        ${c.status !== "agreed" ? `<div class="ev-meta">${esc(c.note)}</div>` : ""}
+          ${r.facts.length ? `<section><h4>Evidence from the filing</h4>${r.facts.map((n) => factEvidence(n, f.facts[n])).join("")}</section>` : ""}
+
+          ${r.settings.length ? `<section><h4>Policy settings used</h4><ul class="settings">${r.settings.map(settingText).join("")}</ul></section>` : ""}
+
+          <section>
+            <h4>Which rule applies</h4>
+            <div class="ev">
+              <div class="ev-head"><b>${esc(c.label)}</b> ${chip(cl[0], cl[1])}</div>
+              <div class="ev-meta">Keywords: ${esc(c.keyword.category.replace(/_/g, " "))}${c.keyword.direction !== "n/a" ? ` (${esc(c.keyword.direction)})` : ""}
+                · LLM: ${llm ? esc(llm.category.replace(/_/g, " ")) + (llm.direction && llm.direction !== "n/a" ? ` (${esc(llm.direction)})` : "") + ` <span class="muted">[${esc(llm.source)}]</span>` : `<span class="muted">${esc(c.llm_error || "not used")}</span>`}</div>
+              ${llm ? `<div class="ev-meta">LLM reason: ${esc(llm.reason)}</div>
+                       <blockquote>${esc(llm.quote)} ${llm.quote_verified ? pageBtn({ page: llm.page, page_index: llm.page_index, quote: llm.quote }) : chip("warn", "not found in filing")}</blockquote>` : ""}
+              ${c.status !== "agreed" ? `<div class="ev-meta">${esc(c.note)}</div>` : ""}
+            </div>
+          </section>
+
+          <section>
+            <h4>Board recommendation</h4>
+            <div class="ev">
+              <div class="ev-head">${recBadge(it.board_rec)} ${differsFromBoard(it) ? chip("warn", "Policy differs from board") : ""}</div>
+              ${it.board_rec_evidence ? `<blockquote>${esc(it.board_rec_evidence.quote)} ${pageBtn({ ...it.board_rec_evidence, find: it.board_rec_evidence.quote })}</blockquote>` : `<p class="muted">Not found in the filing.</p>`}
+              <div class="ev-meta">Item section starts ${pageBtn({ ...it.section, find: it.section.quote })}</div>
+            </div>
+          </section>
+          <p class="hint">Keys: ← → items · A accept · O override · Esc overview</p>
+        </div>
+        <div class="iv-right" id="pv"></div>
       </div>
-    </section>
-
-    ${r.settings.length ? `<section><h4>Policy settings used</h4><ul class="settings">${r.settings.map(settingText).join("")}</ul></section>` : ""}
-
-    <section>
-      <h4>Board recommendation</h4>
-      <div class="ev">
-        <div class="ev-head">${recBadge(it.board_rec)} ${differsFromBoard(it) ? chip("warn", "Policy differs from board") : ""}</div>
-        ${it.board_rec_evidence ? `<blockquote>${esc(it.board_rec_evidence.quote)} ${pageBtn({ ...it.board_rec_evidence, find: it.board_rec_evidence.quote })}</blockquote>` : `<p class="muted">Not found in the filing.</p>`}
-        <div class="ev-meta">Item section starts ${pageBtn({ ...it.section, find: it.section.quote })}</div>
-      </div>
-    </section>`;
-  $("#panel").hidden = false;
-  document.querySelector(".app").classList.add("panel-open");
+    </div>`;
+  const ev = mainEvidence(f, it);
+  if (ev) openPage(ev.page_index, ev.find || ev.quote, ev.kind || "text", "item");
+  else $("#pv").innerHTML = `<div class="empty">No filing page for this item.</div>`;
 }
 
-function openItem(number) {
-  const f = currentFiling();
-  if (!f) return;
-  const it = f.items.find((x) => x.number === number);
-  if (!it) return;
-  state.panel = { mode: "item", filingId: f.id, itemNumber: number };
-  renderItemPanel(f, it);
-  document.querySelectorAll("tr.item").forEach((tr) => tr.classList.toggle("active", tr.dataset.item === number));
+function refreshDecision(f, it) {
+  $("#decision").outerHTML = decisionBox(f, it);
+  const ta = $("#decision textarea");
+  if (ta && state.editing === it.number) ta.focus();
 }
 
-// ------------------------------------------------------------------ page view (inside the panel)
+async function saveDecision(f, numbers, action, vote, reason) {
+  const ds = await api(`/api/filings/${encodeURIComponent(f.id)}/decisions`, { items: numbers, action, vote, reason });
+  state.decisions[f.id] = ds;
+  const s = state.filings.find((x) => x.id === f.id);
+  if (s) s.decided_count = ds.decided;
+  state.editing = null;
+  return ds;
+}
 
-async function openPage(index, find, kind = "text") {
+// After a decision, move on to the next open item (after this one, then from the top).
+function goToNextOpen(f, fromNumber) {
+  const ds = state.decisions[f.id];
+  const order = f.items.map((it) => it.number);
+  const from = order.indexOf(fromNumber);
+  const open = new Set(ds.undecided);
+  const next = [...order.slice(from + 1), ...order.slice(0, from)].find((n) => open.has(n));
+  if (next) location.hash = itemHref(f, next);
+  else { toast("Every item is decided. Ready to export."); location.hash = filingHref(f); }
+}
+
+// ------------------------------------------------------------------ page viewer
+
+function pageTarget(where) {
+  if (where === "item") return $("#pv");
+  $("#overlay").hidden = false;
+  return $("#overlay .overlay-box");
+}
+
+async function openPage(index, find, kind = "text", where) {
   const f = currentFiling();
   if (!f) return;
+  where = where || ($("#pv") ? "item" : "overlay");
   const page = await api(`/api/filings/${encodeURIComponent(f.id)}/pages/${index}`);
-  const back = state.panel && state.panel.itemNumber;
-  state.panel = { mode: "page", filingId: f.id, itemNumber: back, index: page.index, find, kind, pageCount: page.page_count };
-  $("#panel-kicker").textContent = f.company;
-  $("#panel-title").textContent = page.label.startsWith("#")
-    ? `Unnumbered page (${page.index + 1} of ${page.page_count})`
-    : `Page ${page.label}  ·  ${page.index + 1} of ${page.page_count} in file`;
-  $("#panel-back").hidden = !back;
-  $("#page-prev").hidden = $("#page-next").hidden = false;
-  $("#page-prev").disabled = page.index === 0;
-  $("#page-next").disabled = page.index >= page.page_count - 1;
+  state.page = { filingId: f.id, index: page.index, find, kind, pageCount: page.page_count, where };
+  const target = pageTarget(where);
+  if (!target) return;
 
   const norm = (s) => s.replace(/(\w)- (\w)/g, "$1$2").replace(/[’]/g, "'").replace(/[“”]/g, '"')
     .replace(/\s+/g, " ").trim().toLowerCase();
@@ -310,24 +520,34 @@ async function openPage(index, find, kind = "text") {
     const n = norm(t);
     return n === q || n.includes(q) || (q.length > 30 && n.length > 30 && q.includes(n));
   };
-  const tableHit = (rows) => q && kind === "table" && rows.some((r) => r.some((c) => norm(c).includes(q)));
+  // EDGAR often wraps prose in one-cell tables, so a text quote can land in a table too.
+  const tableHit = (rows) => q && rows.some((r) => r.some((c) => (kind === "table" ? norm(c).includes(q) : lineHit(c))));
   const blocks = page.blocks || page.lines.map((text) => ({ t: "p", text }));
-  $("#panel-body").innerHTML = `<div class="pagetext">${blocks.map((b) => b.t === "table"
-    ? `<div class="ptable ${tableHit(b.rows) ? "hit" : ""}"><table>${b.rows.map((r) =>
-        `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</table></div>`
-    : `<p class="${lineHit(b.text) ? "hit" : ""}">${esc(b.text)}</p>`).join("")}</div>`;
-  $("#panel").hidden = false;
-  document.querySelector(".app").classList.add("panel-open");
-  const hitEl = $("#panel-body .hit");
-  if (hitEl) hitEl.scrollIntoView({ block: "center" });
-  else $("#panel-body").scrollTop = 0;
+  const title = page.label.startsWith("#")
+    ? `Unnumbered page (${page.index + 1} of ${page.page_count})`
+    : `Page ${page.label} · ${page.index + 1} of ${page.page_count} in file`;
+  target.innerHTML = `
+    <div class="pv-head">
+      <div><div class="kicker">Filing</div><div class="pv-title">${esc(title)}</div></div>
+      <div class="pv-actions">
+        <button class="icon-btn" data-page-step="-1" title="Previous page" aria-label="Previous page" ${page.index === 0 ? "disabled" : ""}>↑</button>
+        <button class="icon-btn" data-page-step="1" title="Next page" aria-label="Next page" ${page.index >= page.page_count - 1 ? "disabled" : ""}>↓</button>
+        ${where === "overlay" ? `<button class="icon-btn" data-close-overlay title="Close (Esc)" aria-label="Close">×</button>` : ""}
+      </div>
+    </div>
+    <div class="pv-body pagetext">${blocks.map((b) => b.t === "table"
+      ? `<div class="ptable ${tableHit(b.rows) ? "hit" : ""}"><table>${b.rows.map((r) =>
+          `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</table></div>`
+      : `<p class="${lineHit(b.text) ? "hit" : ""}">${esc(b.text)}</p>`).join("")}</div>`;
+  const body = target.querySelector(".pv-body");
+  const hitEl = body.querySelector(".hit");
+  // Scroll only the page viewer, not the surrounding layout.
+  body.scrollTop = hitEl ? Math.max(0, hitEl.offsetTop - body.clientHeight / 3) : 0;
 }
 
-function closePanel() {
-  $("#panel").hidden = true;
-  document.querySelector(".app").classList.remove("panel-open");
-  state.panel = null;
-  document.querySelectorAll("tr.item.active").forEach((tr) => tr.classList.remove("active"));
+function closeOverlay() {
+  $("#overlay").hidden = true;
+  if (state.page?.where === "overlay") state.page = null;
 }
 
 // ------------------------------------------------------------------ policy
@@ -335,7 +555,9 @@ function closePanel() {
 function renderPolicy() {
   const p = state.policy;
   const optText = (s) => s.options[String(s.value)] ?? String(s.value);
-  $("#main").innerHTML = `
+  const main = $("#main");
+  main.classList.remove("full");
+  main.innerHTML = `
     <div class="page-head">
       <div>
         <div class="kicker">Hard-coded · version ${esc(p.version)}</div>
@@ -366,55 +588,161 @@ function renderPolicy() {
 
 // ------------------------------------------------------------------ routing
 
+async function loadFiling(id) {
+  if (!state.cache[id]) {
+    $("#main").classList.remove("full");
+    $("#main").innerHTML = `<div class="empty">Loading filing…</div>`;
+    const [f, ds] = await Promise.all([
+      api(`/api/filings/${encodeURIComponent(id)}`),
+      api(`/api/filings/${encodeURIComponent(id)}/decisions`),
+    ]);
+    state.cache[id] = f;
+    state.decisions[id] = ds;
+  }
+  return state.cache[id];
+}
+
 async function route() {
   const hash = location.hash || "";
+  closeOverlay();
   if (!hash || hash === "#/") {
-    if (state.filings.length) location.hash = `#/filing/${state.filings[0].id}`;
+    if (state.filings.length) location.hash = filingHref(state.filings[0]);
     else renderPolicy();
     return;
   }
-  renderRail();
   if (hash === "#/policy") {
-    closePanel();
+    renderRail();
     return renderPolicy();
   }
-  const m = hash.match(/^#\/filing\/(.+)$/);
-  if (m) {
-    const id = decodeURIComponent(m[1]);
-    if (state.panel && state.panel.filingId !== id) closePanel();
-    if (!state.cache[id]) {
-      $("#main").innerHTML = `<div class="empty">Loading filing…</div>`;
-      state.cache[id] = await api(`/api/filings/${encodeURIComponent(id)}`);
-    }
-    return renderFiling(state.cache[id]);
+  const r = parseRoute();
+  if (r) {
+    const f = await loadFiling(r.filingId);
+    renderRail();
+    if (!r.item) return renderFiling(f);
+    const it = f.items.find((x) => x.number === r.item);
+    if (!it) { $("#main").innerHTML = `<div class="empty">No item ${esc(r.item)} in this filing.</div>`; return; }
+    if (state.editing !== it.number) state.editing = null;
+    return renderItem(f, it);
   }
+  renderRail();
   $("#main").innerHTML = `<div class="empty">Not found.</div>`;
 }
 
+async function act(fn) {
+  try { await fn(); } catch (err) { toast(err.message); }
+}
+
 document.addEventListener("click", (e) => {
-  const src = e.target.closest("[data-open-page]");
+  const t = e.target;
+  const src = t.closest("[data-open-page]");
   if (src) {
-    e.stopPropagation();
+    e.preventDefault();
     openPage(Number(src.dataset.openPage), src.dataset.find, src.dataset.kind);
     return;
   }
-  const tog = e.target.closest("[data-toggle]");
-  if (tog) {
-    state.collapsed[tog.dataset.toggle] = !state.collapsed[tog.dataset.toggle];
-    route();
+  const step = t.closest("[data-page-step]");
+  if (step && state.page) {
+    const p = state.page;
+    openPage(p.index + Number(step.dataset.pageStep), p.find, p.kind, p.where);
     return;
   }
-  const row = e.target.closest("tr.item[data-item]");
-  if (row) openItem(row.dataset.item);
+  if (t.closest("[data-close-overlay]") || t.id === "overlay") return closeOverlay();
+
+  const tog = t.closest("[data-toggle]");
+  if (tog) {
+    const key = tog.dataset.toggle;
+    const was = key in state.collapsed ? state.collapsed[key] : tog.dataset.default === "true";
+    state.collapsed[key] = !was;
+    renderRail();
+    if (!key.startsWith("rail:") && !parseRoute()?.item) renderFiling(currentFiling());
+    return;
+  }
+
+  const f = currentFiling();
+  const exp = t.closest("[data-export]");
+  if (exp && f) {
+    const open = state.decisions[f.id].undecided.length;
+    if (open && !confirm(`${open} item${open > 1 ? "s are" : " is"} still undecided. They'll have a blank final vote in the file. Export anyway?`)) e.preventDefault();
+    return;
+  }
+  const bulk = t.closest("[data-bulk-accept]");
+  if (bulk && f) {
+    const nums = bulk.dataset.bulkAccept.split(",");
+    return act(async () => {
+      await saveDecision(f, nums, "accept");
+      toast(`Accepted FOR on ${nums.length} nominee${nums.length > 1 ? "s" : ""}.`);
+      renderRail(); renderFiling(f);
+    });
+  }
+  const it = f && parseRoute()?.item ? f.items.find((x) => x.number === parseRoute().item) : null;
+  if (it && t.closest("[data-accept]")) {
+    return act(async () => {
+      await saveDecision(f, [it.number], "accept");
+      toast(`Item ${it.number}: accepted ${it.recommendation.vote}.`);
+      goToNextOpen(f, it.number);
+    });
+  }
+  if (it && t.closest("[data-edit]")) { state.editing = it.number; return refreshDecision(f, it); }
+  if (it && t.closest("[data-cancel-edit]")) { state.editing = null; return refreshDecision(f, it); }
+  if (it && t.closest("[data-clear]")) {
+    return act(async () => {
+      await saveDecision(f, [it.number], "clear");
+      renderRail(); refreshDecision(f, it);
+    });
+  }
+  const row = t.closest("tr.item[data-href]");
+  if (row && !t.closest("button, a")) location.hash = row.dataset.href;
 });
+
+document.addEventListener("change", (e) => {
+  const form = e.target.closest("[data-vote-form]");
+  const f = currentFiling();
+  if (!form || !f || e.target.name !== "vote") return;
+  const it = f.items.find((x) => x.number === form.dataset.voteForm);
+  const needs = it.recommendation.vote === "FLAG" || e.target.value !== it.recommendation.vote;
+  form.querySelector("[data-reason-hint]").textContent = needs ? "(required)" : "(optional)";
+});
+
+document.addEventListener("submit", (e) => {
+  const form = e.target.closest("[data-vote-form]");
+  if (!form) return;
+  e.preventDefault();
+  const f = currentFiling();
+  const it = f.items.find((x) => x.number === form.dataset.voteForm);
+  const vote = form.querySelector("input[name=vote]:checked")?.value;
+  const reason = form.querySelector("textarea").value;
+  const err = form.querySelector("[data-form-err]");
+  const fail = (msg) => { err.textContent = msg; err.hidden = false; };
+  if (!vote) return fail("Choose a vote.");
+  if ((vote !== it.recommendation.vote || it.recommendation.vote === "FLAG") && !reason.trim())
+    return fail("Add a reason. It's saved with the vote and goes into the export.");
+  saveDecision(f, [it.number], "vote", vote, reason)
+    .then((ds) => {
+      const s = ds.items[it.number];
+      toast(`Item ${it.number}: ${vote} (${STATE_LABEL[s.state].toLowerCase()}).`);
+      goToNextOpen(f, it.number);
+    })
+    .catch((x) => fail(x.message));
+});
+
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closePanel();
-  if (e.key === "Enter" && e.target.matches("tr.item[data-item]")) openItem(e.target.dataset.item);
+  if (e.key === "Escape") {
+    if (!$("#overlay").hidden) return closeOverlay();
+    if (typing(e)) return e.target.blur();
+  }
+  if (typing(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+  const r = parseRoute();
+  const f = currentFiling();
+  if (e.key === "Enter" && e.target.matches("tr.item[data-href]")) { location.hash = e.target.dataset.href; return; }
+  if (!r?.item || !f) return;
+  const idx = f.items.findIndex((x) => x.number === r.item);
+  const it = f.items[idx];
+  if (e.key === "Escape") location.hash = filingHref(f);
+  else if (e.key === "ArrowLeft" && idx > 0) location.hash = itemHref(f, f.items[idx - 1].number);
+  else if (e.key === "ArrowRight" && idx < f.items.length - 1) location.hash = itemHref(f, f.items[idx + 1].number);
+  else if ((e.key === "a" || e.key === "A") && $("[data-accept]")) $("[data-accept]").click();
+  else if ((e.key === "o" || e.key === "O") && $("[data-edit]")) { e.preventDefault(); state.editing = it.number; refreshDecision(f, it); }
 });
-$("#panel-close").addEventListener("click", closePanel);
-$("#panel-back").addEventListener("click", () => state.panel?.itemNumber && openItem(state.panel.itemNumber));
-$("#page-prev").addEventListener("click", () => { const p = state.panel; if (p?.mode === "page" && p.index > 0) openPage(p.index - 1, p.find, p.kind); });
-$("#page-next").addEventListener("click", () => { const p = state.panel; if (p?.mode === "page" && p.index < p.pageCount - 1) openPage(p.index + 1, p.find, p.kind); });
 window.addEventListener("hashchange", route);
 
 (async function init() {

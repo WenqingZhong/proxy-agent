@@ -30,24 +30,12 @@
       <div class="empty">Loading…</div>
     </main>
 
-    <aside id="panel" class="panel" hidden>
-      <header class="panel-head">
-        <div class="panel-head-left">
-          <button class="icon-btn" id="panel-back" title="Back to item" aria-label="Back to item" hidden>‹</button>
-          <div>
-            <div class="panel-kicker" id="panel-kicker"></div>
-            <div class="panel-title" id="panel-title"></div>
-          </div>
-        </div>
-        <div class="panel-actions">
-          <button class="icon-btn" id="page-prev" title="Previous page" aria-label="Previous page" hidden>↑</button>
-          <button class="icon-btn" id="page-next" title="Next page" aria-label="Next page" hidden>↓</button>
-          <button class="icon-btn" id="panel-close" title="Close" aria-label="Close">×</button>
-        </div>
-      </header>
-      <div class="panel-body" id="panel-body"></div>
-    </aside>
   </div>
+
+  <div id="overlay" class="overlay" hidden>
+    <div class="overlay-box" role="dialog" aria-label="Filing page"></div>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
 
   <script src="/app.js"></script>
 </body>
