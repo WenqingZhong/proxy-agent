@@ -24,6 +24,9 @@ class Page:
     lines: list[str]
     printed: int | None = None  # page number printed on the page, if found
     label: str = field(default="")
+    tables: list = field(default_factory=list)  # list of tables; table = list of rows; row = list of cell strings
+    tables_html: list = field(default_factory=list)  # raw HTML of each table, for grid-aware parsing
+    blocks: list = field(default_factory=list)  # for display: {"t": "p", "text"} or {"t": "table", "rows"}
 
     @property
     def text(self) -> str:
@@ -43,6 +46,67 @@ def html_to_lines(fragment: str) -> list[str]:
         if line:
             out.append(line)
     return out
+
+
+TABLE = re.compile(r"(?is)<table\b.*?</table>")
+ROW = re.compile(r"(?is)<tr\b.*?</tr>")
+CELL = re.compile(r"(?is)<t[dh]\b.*?</t[dh]>")
+_FILLER_CELL = re.compile(r"^[$%()]?$")
+
+
+def _cell_text(cell_html: str) -> str:
+    t = TAG.sub(" ", re.sub(r"(?i)<br\s*/?>", " ", cell_html))
+    t = html.unescape(t)
+    return SPACES.sub(" ", t).strip()
+
+
+def html_tables(fragment: str) -> list[list[list[str]]]:
+    """Tables as rows of non-empty cells. EDGAR tables spread one value over
+    several cells ("$" | "47,260,000" | ""), so empty and lone "$", "%", "(" or ")"
+    cells are dropped; that leaves label, value, value… in each row."""
+    tables = []
+    for t in TABLE.findall(fragment):
+        rows = []
+        for r in ROW.findall(t):
+            cells = [_cell_text(c) for c in CELL.findall(r)]
+            cells = [c for c in cells if not _FILLER_CELL.match(c)]
+            if cells:
+                rows.append(cells)
+        if rows:
+            tables.append(rows)
+    return tables
+
+
+SPAN = re.compile(r"""(?i)colspan\s*=\s*["']?(\d+)""")
+RSPAN = re.compile(r"""(?i)rowspan\s*=\s*["']?(\d+)""")
+CELL_OPEN = re.compile(r"(?is)<t[dh]\b([^>]*)>(.*?)</t[dh]>")
+
+
+def table_grid(table_html: str) -> list[list[tuple[int, int, str]]]:
+    """Rows of (first_col, last_col, text), laid out like a browser would
+    (colspan and rowspan), so a value can be matched to the header above it."""
+    grid = []
+    taken: dict[int, set[int]] = {}      # row -> columns filled by a rowspan from above
+    for ri, r in enumerate(ROW.findall(table_html)):
+        col = 0
+        cells = []
+        busy = taken.get(ri, set())
+        for attrs, inner in CELL_OPEN.findall(r):
+            while col in busy:
+                col += 1
+            m = SPAN.search(attrs)
+            span = int(m.group(1)) if m else 1
+            m = RSPAN.search(attrs)
+            rspan = int(m.group(1)) if m else 1
+            for k in range(1, rspan):
+                taken.setdefault(ri + k, set()).update(range(col, col + span))
+            text = _cell_text(inner)
+            if text and not _FILLER_CELL.match(text):
+                cells.append((col, col + span - 1, text))
+            col += span
+        if cells:
+            grid.append(cells)
+    return grid
 
 
 # A footer like "14 STARBUCKS 2026 PROXY", "Alphabet 2026 Proxy Statement 21",
@@ -65,6 +129,21 @@ def _find_printed(lines: list[str]) -> int | None:
     return None
 
 
+def _blocks(chunk: str) -> list[dict]:
+    """Paragraphs and tables in reading order, for showing a page to the analyst."""
+    out, pos = [], 0
+    for m in TABLE.finditer(chunk):
+        out += [{"t": "p", "text": l} for l in html_to_lines(chunk[pos:m.start()])]
+        rows = html_tables(m.group(0))
+        if rows and rows[0]:
+            width = max(len(r) for r in rows[0])
+            # Header rows often skip the label column; pad on the left so years sit over their values.
+            out.append({"t": "table", "rows": [[""] * (width - len(r)) + r for r in rows[0]]})
+        pos = m.end()
+    out += [{"t": "p", "text": l} for l in html_to_lines(chunk[pos:])]
+    return out
+
+
 def split_pages(raw_html: str) -> list[Page]:
     raw_html = HIDDEN.sub(" ", raw_html)
     chunks = PAGE_BREAK.split(raw_html)
@@ -73,7 +152,8 @@ def split_pages(raw_html: str) -> list[Page]:
         lines = html_to_lines(chunk)
         if not lines:
             continue
-        pages.append(Page(index=len(pages), lines=lines))
+        pages.append(Page(index=len(pages), lines=lines, tables=html_tables(chunk),
+                          tables_html=TABLE.findall(chunk), blocks=_blocks(chunk)))
     for p in pages:
         p.printed = _find_printed(p.lines)
     _clean_page_numbers(pages)
@@ -99,7 +179,5 @@ def _clean_page_numbers(pages: list[Page]) -> None:
         if nums[i] is None:
             if 0 < i < len(nums) - 1 and nums[i - 1] is not None and nums[i + 1] == nums[i - 1] + 2:
                 nums[i] = nums[i - 1] + 1
-            elif i > 0 and nums[i - 1] is not None and i + 1 < len(nums) and nums[i + 1] is None:
-                pass
     for p, n in zip(pages, nums):
         p.printed = n

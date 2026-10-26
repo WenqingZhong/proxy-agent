@@ -1,0 +1,116 @@
+{
+  "_note": "Hand-written stand-in for the LLM, used when no ANTHROPIC_API_KEY is set. Categories are a human reading; quotes are copied from the filing.",
+  "classify": {
+    "items": [
+      {
+        "number": "1",
+        "category": "director_election",
+        "direction": "n/a",
+        "reason": "Election of the board's nominees.",
+        "quote": "OUR BOARD OF DIRECTORS RECOMMENDS A VOTE FOR THE ELECTION TO THE BOARD OF DIRECTORS OF EACH OF THE ABOVEMENTIONED NOMINEES."
+      },
+      {
+        "number": "2",
+        "category": "auditor_ratification",
+        "direction": "n/a",
+        "reason": "Ratifies Ernst & Young as independent auditor.",
+        "quote": "OUR BOARD OF DIRECTORS RECOMMENDS A VOTE FOR THE RATIFICATION OF THE APPOINTMENT OF ERNST & YOUNG LLP AS OUR INDEPENDENT REGISTERED PUBLIC ACCOUNTING FIRM FOR THE FISCAL YEAR ENDING DECEMBER 31, 2026."
+      },
+      {
+        "number": "3",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Equity plan share increase; not say-on-pay.",
+        "quote": "OUR BOARD OF DIRECTORS RECOMMENDS A VOTE FOR THE APPROVAL OF THE AMENDMENT AND RESTATEMENT OF THE ALPHABET INC. AMENDED AND RESTATED 2021 STOCK PLAN TO INCREASE THE NUMBER OF SHARES OF CLASS C CAPITAL STOCK ISSUABLE UNDER THE PLAN BY 200,000,000 SHARES."
+      },
+      {
+        "number": "4",
+        "category": "say_on_pay",
+        "direction": "n/a",
+        "reason": "Advisory approval of named executive officer pay.",
+        "quote": "OUR BOARD OF DIRECTORS RECOMMENDS A VOTE FOR THE APPROVAL, ON AN ADVISORY BASIS, OF THE COMPENSATION AWARDED TO ALPHABET’S NAMED EXECUTIVE OFFICERS AS DESCRIBED IN THIS PROXY STATEMENT."
+      },
+      {
+        "number": "5",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Climate disclosure report.",
+        "quote": "Resolved: Shareholders request that Alphabet publish a report, at reasonable cost, within a reasonable time, and excluding confidential or proprietary information, explaining how it will meet the climate change-related commitments it has made on GHGs, given the massively growing energy demand from artificial intelligence and data centers that Alphabet is planning to build."
+      },
+      {
+        "number": "6",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Water usage report.",
+        "quote": "Resolved: Shareholders request that Alphabet Inc."
+      },
+      {
+        "number": "7",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "One vote per share recapitalization (dual-class); not majority voting or declassification.",
+        "quote": "RESOLVED: Shareholders request that our Board take all practicable steps in its control to initiate and adopt a recapitalization plan for all outstanding stock to have one vote per share."
+      },
+      {
+        "number": "8",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Viewpoint diversity report.",
+        "quote": "Resolved: Shareholders request that the Board of Directors establish an independent committee to publish a report, at reasonable cost and omitting proprietary information, assessing the risks to the Alphabet arising from an apparent lack of viewpoint diversity on the Board and within senior leadership."
+      },
+      {
+        "number": "9",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Content moderation report.",
+        "quote": "Resolved: Shareholders request that Alphabet conduct an evaluation and issue a report within the next year, at reasonable expense and excluding proprietary and confidential information, analyzing the benefits, costs, and legal, reputational, competitive, and other relevant risks of the use of diagnostic tools created by politicized corporate partners."
+      },
+      {
+        "number": "10",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Immigration policy report.",
+        "quote": "Resolved: Shareholders request that the Board of Directors provide a publicly available report on how U.S."
+      },
+      {
+        "number": "11",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Data privacy report.",
+        "quote": "RESOLVED: Shareholders request the Board of Directors issue public reporting, prepared at reasonable cost and omitting proprietary information, assessing operational, reputational, regulatory and legal risks to Alphabet, Inc."
+      },
+      {
+        "number": "12",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "AI board oversight.",
+        "quote": "RESOLVED, Shareholders request the Board of Directors of Alphabet, Inc."
+      },
+      {
+        "number": "13",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "AI misinformation report.",
+        "quote": "Resolved: Shareholders request that the Board commission a third-party assessment, at reasonable expense, of additional actions the company could take to mitigate the proliferation of false information on the platform and report to shareholders, omitting proprietary or privileged information, with a summary of the outcome of the assessment."
+      },
+      {
+        "number": "14",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "AI data usage oversight report.",
+        "quote": "Resolved: Shareholders request the Company to prepare a report, at reasonable cost, omitting proprietary or legally privileged information, to be published within one year of the Annual Meeting and updated annually thereafter, which assesses the risks to the Company’s operations and finances, and to public welfare, presented by the real or potential unethical or improper usage of external data in the development, training, and deployment of its artificial intelligence offerings; what steps the Company takes to mitigate those risks; and how it measures the effectiveness of such efforts."
+      }
+    ]
+  },
+  "locate": {
+    "attendance": [
+      "24"
+    ],
+    "fees": [
+      "59"
+    ],
+    "pay": [
+      "56"
+    ]
+  }
+}

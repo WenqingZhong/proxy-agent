@@ -1,0 +1,67 @@
+{
+  "_note": "Hand-written stand-in for the LLM, used when no ANTHROPIC_API_KEY is set. Categories are a human reading; quotes are copied from the filing.",
+  "classify": {
+    "items": [
+      {
+        "number": "1",
+        "category": "director_election",
+        "direction": "n/a",
+        "reason": "Election of the board's nominees.",
+        "quote": "The Board of Directors recommends a vote “FOR” each nominee."
+      },
+      {
+        "number": "2",
+        "category": "auditor_ratification",
+        "direction": "n/a",
+        "reason": "Ratifies Ernst & Young as independent auditors.",
+        "quote": "The Board of Directors recommends a vote “FOR” ratification of the appointment of EY as our independent"
+      },
+      {
+        "number": "3",
+        "category": "say_on_pay",
+        "direction": "n/a",
+        "reason": "Advisory approval of executive compensation.",
+        "quote": "The Board of Directors recommends a vote “FOR” approval, on an advisory basis, of our executive"
+      },
+      {
+        "number": "4",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Charitable partnerships report.",
+        "quote": "Resolved: Shareholders request that Amazon.com conduct an evaluation and issue a report within the next year, at reasonable expense and excluding proprietary and confidential information, analyzing the benefits, costs, and legal, reputational, competitive, and other relevant risks of the use of diagnostic tools created by politicized corporate partners."
+      },
+      {
+        "number": "5",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Data center climate reporting.",
+        "quote": "Resolved: Shareholders request that Amazon issue a report explaining how it will meet the climate change-related commitments it has made on greenhouse gas emissions, given the massively growing energy demand from artificial intelligence and data centers that Amazon is planning to build."
+      },
+      {
+        "number": "6",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Climate commitments report.",
+        "quote": "Resolved: Shareholders request that, by March 31, 2027, the Board of Directors publish a report, prepared at reasonable cost and omitting proprietary or competitively sensitive information: 1."
+      },
+      {
+        "number": "7",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Independent board chair policy.",
+        "quote": "RESOLVED: Shareholders of Amazon.com, Inc."
+      }
+    ]
+  },
+  "locate": {
+    "attendance": [
+      "20"
+    ],
+    "fees": [
+      "26"
+    ],
+    "pay": [
+      "60"
+    ]
+  }
+}

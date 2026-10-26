@@ -11,7 +11,11 @@ sys.path.insert(0, str(ROOT / "app"))
 
 from pages import split_pages  # noqa: E402
 from extract import extract_ballot  # noqa: E402
-from policy import rule_for  # noqa: E402
+from classify import keyword_category, RULE_FOR_CATEGORY  # noqa: E402
+
+
+def rule_for(title):
+    return RULE_FOR_CATEGORY[keyword_category(title)["category"]]
 
 
 def load(fid):
@@ -63,9 +67,9 @@ class Alphabet(unittest.TestCase):
         self.assertEqual(self.items["4"].kind, "say_on_pay")
 
     def test_stock_plan_and_equal_voting_are_flagged(self):
-        self.assertEqual(rule_for(self.items["3"].kind), "FLAG")
+        self.assertEqual(rule_for(self.items["3"].title), "FLAG")
         # "Equal shareholder voting" is not declassification or majority voting.
-        self.assertEqual(rule_for(self.items["7"].kind), "FLAG")
+        self.assertEqual(rule_for(self.items["7"].title), "FLAG")
 
     def test_board_recs(self):
         self.assertEqual(self.items["2"].board_rec, "FOR")

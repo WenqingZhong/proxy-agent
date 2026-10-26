@@ -1,0 +1,81 @@
+{
+  "_note": "Hand-written stand-in for the LLM, used when no ANTHROPIC_API_KEY is set. Categories are a human reading; quotes are copied from the filing.",
+  "classify": {
+    "items": [
+      {
+        "number": "1",
+        "category": "director_election",
+        "direction": "n/a",
+        "reason": "Election of the board's nominees.",
+        "quote": "The Starbucks board of directors recommends that shareholders vote FOR the election of each of the following individuals nominated by the board:"
+      },
+      {
+        "number": "2",
+        "category": "say_on_pay",
+        "direction": "n/a",
+        "reason": "Advisory approval of named executive officer pay.",
+        "quote": "RESOLVED, that the shareholders of Starbucks Corporation approve, on a nonbinding, advisory basis, the compensation of the Company’s named executive officers as disclosed in the Compensation Discussion and Analysis, the Summary Compensation Table, the related compensation tables, notes, and narrative in the proxy statement for the Company’s 2026 Annual Meeting of Shareholders."
+      },
+      {
+        "number": "3",
+        "category": "auditor_ratification",
+        "direction": "n/a",
+        "reason": "Ratifies Deloitte as independent auditor.",
+        "quote": "The board of directors recommends a vote FOR the ratification of the selection of Deloitte & Touche LLP as our independent registered public accounting firm for fiscal year 2026."
+      },
+      {
+        "number": "4",
+        "category": "majority_voting",
+        "direction": "toward",
+        "reason": "Asks to replace supermajority vote requirements with a majority standard (approval thresholds, not director elections).",
+        "quote": "RESOLVED: Shareholders request that our board take the steps necessary so that any voting requirement that calls for a greater than majority vote be replaced by a requirement for a majority of the votes entitled to be cast on applicable proposals."
+      },
+      {
+        "number": "5",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Independent board chair policy; leadership structure, not declassification or majority voting.",
+        "quote": "Resolved : Shareholders request the Board of Directors of Starbucks Corporation (“Company”) adopt as policy, and amend the governing documents as necessary, to require hereafter that two separate people hold the office of the Chairman of the Board (“Chair”) and the office of the Chief Executive Officer (“CEO”) as follows: Selection of the Chairman of the Board: The Board requires the separation of the offices of the Chairman of the Board and the Chief Executive Officer."
+      },
+      {
+        "number": "6",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Report request on healthcare coverage.",
+        "quote": "RESOLVED: Shareholders request that the Board of Directors of Starbucks conduct an evaluation and issue a report within the next year, at reasonable cost and excluding confidential information, assessing financial risks associated with the company’s apparent exclusion of detransitioning in its healthcare coverage."
+      },
+      {
+        "number": "7",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Report request on compensation and benefits gaps.",
+        "quote": "RESOLVED: Shareholders request the board of Starbucks report on median compensation and benefits gaps across gender as they address reproductive and gender dysphoria care, including associated policy, reputational, competitive, operational and litigative risks, and risks related to recruiting and retaining diverse talent."
+      },
+      {
+        "number": "8",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Report request on diagnostic tools.",
+        "quote": "RESOLVED: Shareholders request that Starbucks conduct an evaluation and issue a report within the next year, at reasonable expense and excluding proprietary and confidential information, analyzing the benefits, costs, and legal, reputational, competitive, and other relevant risks of Starbucks’ use of diagnostic tools created by politicized corporate partners."
+      },
+      {
+        "number": "9",
+        "category": "other",
+        "direction": "n/a",
+        "reason": "Report request on charitable gift matching.",
+        "quote": "RESOLVED: Shareholders request the Board of Directors conduct an evaluation and issue a report within the next year, at reasonable cost and excluding proprietary and confidential information, evaluating the reputational, human capital, operational, legal, and other relevant risks of excluding religious charities from its employee -gift match program."
+      }
+    ]
+  },
+  "locate": {
+    "attendance": [
+      "29"
+    ],
+    "fees": [
+      "84"
+    ],
+    "pay": [
+      "80"
+    ]
+  }
+}

@@ -17,9 +17,8 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "app"))
 
-from pages import split_pages  # noqa: E402
-from extract import extract_ballot  # noqa: E402
-from policy import POLICY, rule_for  # noqa: E402
+from pipeline import analyze  # noqa: E402
+from policy import POLICY  # noqa: E402
 
 FILINGS_DIR = ROOT / "data" / "filings"
 STATIC_DIR = ROOT / "static"
@@ -39,15 +38,14 @@ class Store:
             t0 = time.time()
             fid = path.stem
             raw = path.read_text(encoding="utf-8", errors="ignore")
-            pages = split_pages(raw)
-            filing = extract_ballot(fid, pages)
-            for item in filing.items:
-                item.policy_rule = rule_for(item.kind)
-            self.filings[fid] = filing.to_dict()
-            self.filings[fid]["source_file"] = path.name
+            filing, pages = analyze(fid, raw)
+            filing["source_file"] = path.name
+            self.filings[fid] = filing
             self.pages[fid] = pages
-            print(f"  loaded {path.name}: {filing.company}, {len(filing.items)} ballot items, "
-                  f"{len(pages)} pages ({time.time() - t0:.1f}s)")
+            votes = [i["recommendation"]["vote"] for i in filing["items"]]
+            print(f"  {path.name}: {filing['company']}, {len(votes)} items "
+                  f"({votes.count('FOR')} FOR, {votes.count('AGAINST')} AGAINST, {votes.count('FLAG')} FLAG), "
+                  f"LLM: {filing['llm_mode']} ({time.time() - t0:.1f}s)")
 
     def summaries(self) -> list[dict]:
         out = []
@@ -59,7 +57,8 @@ class Store:
                 "meeting_date": f["meeting_date"],
                 "source_file": f["source_file"],
                 "item_count": len(items),
-                "flag_count": sum(1 for i in items if i["policy_rule"] == "FLAG"),
+                "flag_count": sum(1 for i in items if i["recommendation"]["vote"] == "FLAG"),
+                "llm_mode": f["llm_mode"],
                 "warnings": f["warnings"],
             })
         return sorted(out, key=lambda s: s["company"].lower())
@@ -111,6 +110,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "index": page.index,
                 "label": page.label,
                 "lines": page.lines,
+                "blocks": page.blocks,
                 "page_count": len(pages),
             })
         return self._json({"error": "not found"}, 404)

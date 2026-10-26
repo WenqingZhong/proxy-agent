@@ -49,7 +49,7 @@ class BallotItem:
     board_rec: str | None          # FOR | AGAINST | NONE (no recommendation) | None (not found)
     section: Evidence | None
     board_rec_evidence: Evidence | None = None
-    policy_rule: str = ""          # which policy rule covers this item (filled in policy.py)
+    proposal_title: str = ""       # the proposal's own title (for nominees: "Election of Directors")
 
 
 @dataclass
@@ -296,6 +296,7 @@ def extract_ballot(filing_id: str, pages: list[Page]) -> Filing:
             board_rec=rec,
             section=Evidence(page.label, page.index, quote),
             board_rec_evidence=rec_ev,
+            proposal_title=title,
         )
         if rec is None:
             filing.warnings.append(f"Item {n}: couldn't find the board's recommendation.")
@@ -314,6 +315,7 @@ def extract_ballot(filing_id: str, pages: list[Page]) -> Filing:
                         board_rec=rec,
                         section=item.section,
                         board_rec_evidence=rec_ev,
+                        proposal_title=title,
                     ))
                 continue
             filing.warnings.append("Couldn't list individual director nominees.")
