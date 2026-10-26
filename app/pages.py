@@ -27,6 +27,7 @@ class Page:
     tables: list = field(default_factory=list)  # list of tables; table = list of rows; row = list of cell strings
     tables_html: list = field(default_factory=list)  # raw HTML of each table, for grid-aware parsing
     blocks: list = field(default_factory=list)  # for display: {"t": "p", "text"} or {"t": "table", "rows"}
+    html: str = field(default="", repr=False)   # the page's raw HTML, for linking to the live filing
 
     @property
     def text(self) -> str:
@@ -153,7 +154,7 @@ def split_pages(raw_html: str) -> list[Page]:
         if not lines:
             continue
         pages.append(Page(index=len(pages), lines=lines, tables=html_tables(chunk),
-                          tables_html=TABLE.findall(chunk), blocks=_blocks(chunk)))
+                          tables_html=TABLE.findall(chunk), blocks=_blocks(chunk), html=chunk))
     for p in pages:
         p.printed = _find_printed(p.lines)
     _clean_page_numbers(pages)

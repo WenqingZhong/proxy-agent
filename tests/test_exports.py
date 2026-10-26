@@ -85,6 +85,17 @@ class Exports(unittest.TestCase):
         data = decisions.apply(self.dec, f, [n], "confirm")       # new timestamp, same vote
         self.assertFalse(self.status(f, data)["outdated"])
 
+    def test_renamed_decision_labels_dont_outdate_old_exports(self):
+        for fid in FIDS:
+            f = base(fid)
+            n = first_policy_item(f)
+            data = decisions.apply(self.dec, f, [n], "vote", "AGAINST", "House view")
+            snap = self.export(f, data)
+            for r in snap["votes"]:                                # an export saved under older wording
+                r["decision"] = {"override": "overrode policy"}.get(r["decision"], r["decision"])
+            (self.exp / fid / f"{snap['_export']['id']}.json").write_text(json.dumps(snap), encoding="utf-8")
+            self.assertFalse(self.status(f, data)["outdated"], fid)
+
     def test_reason_and_new_decisions_count(self):
         f = base("starbucks-2026-def14a")
         data = decisions.apply(self.dec, f, ["5"], "vote", "AGAINST", "First reason")

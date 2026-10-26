@@ -34,8 +34,7 @@ from pathlib import Path
 
 from policy import POLICY
 
-VOTES = ("FOR", "AGAINST", "ABSTAIN", "ABSENT")   # ABSENT: not voting the shares
-ALWAYS_EXPLAIN = ("ABSTAIN", "ABSENT")
+VOTES = ("FOR", "AGAINST")
 _LOCK = threading.Lock()
 
 
@@ -214,7 +213,9 @@ def apply(root: Path, filing: dict, numbers: list[str], action: str,
             if not prev:
                 raise ValueError(f"Item {n} has no earlier decision to keep.")
             chosen, reason = prev["vote"], reason or prev.get("reason", "")
-            if (chosen != policy or chosen in ALWAYS_EXPLAIN) and not reason:
+            if chosen not in VOTES:      # e.g. an ABSTAIN saved before only FOR/AGAINST were allowed
+                raise ValueError(f"Item {n}: {chosen} is no longer a vote option. Vote FOR or AGAINST.")
+            if chosen != policy and not reason:
                 raise ValueError(f"Item {n}: a reason is required to keep {chosen}.")
         elif action == "accept":
             if policy == "FLAG":
@@ -224,9 +225,8 @@ def apply(root: Path, filing: dict, numbers: list[str], action: str,
             if vote not in VOTES:
                 raise ValueError(f"Vote must be one of {', '.join(VOTES)}.")
             chosen = vote
-            if (chosen != policy or chosen in ALWAYS_EXPLAIN) and not reason:
-                raise ValueError(f"A reason is required for {chosen}." if chosen in ALWAYS_EXPLAIN
-                                 else "A reason is required when you vote differently from the policy"
+            if chosen != policy and not reason:
+                raise ValueError("A reason is required when you vote differently from the policy"
                                  if policy != "FLAG" else "A reason is required for a flagged item.")
         else:
             raise ValueError(f"Unknown action: {action}.")
@@ -269,6 +269,11 @@ def item_state(filing: dict, item: dict, d: dict | None) -> dict:
         then = (d.get("basis") or {}).get("title") or d["key"].split("|", 1)[1]
         return {**stale, "change": "item_changed", "changes": [f"Item: {then} → {item['title']}"],
                 "note": f"Item {item['number']} is now \"{item['title']}\". Your vote was for \"{then}\". Decide again."}
+    if d["vote"] not in VOTES:
+        # Saved before only FOR/AGAINST were allowed (e.g. ABSTAIN). Kept on disk, but it no
+        # longer counts or exports until she votes FOR or AGAINST.
+        return {**stale, "change": "vote_retired", "changes": [f"{d['vote']} is no longer a vote option"],
+                "note": f"You voted {d['vote']}, which is no longer an option. Vote FOR or AGAINST."}
     if d["policy_vote"] != policy:
         if d["vote"] == policy:
             return {**stale, "change": "now_agrees", "changes": diff or [
@@ -291,7 +296,7 @@ def states(filing: dict, data: dict) -> dict:
     by_item = {i["number"]: item_state(filing, i, data.get(i["number"])) for i in filing["items"]}
     open_ = [n for n, s in by_item.items() if s["final_vote"] is None]
     review = {k: [n for n, s in by_item.items() if s.get("change") == k]
-              for k in ("conflicts", "now_agrees", "item_changed")}
+              for k in ("conflicts", "now_agrees", "item_changed", "vote_retired")}
     review["basis_changed"] = [n for n, s in by_item.items() if s.get("basis_changed")]
     # Decisions for item numbers no longer on the ballot. Kept on disk, never exported.
     review["removed"] = [{"number": n, "title": (d.get("basis") or {}).get("title", ""), "vote": d["vote"]}
@@ -347,12 +352,13 @@ def main_page(item: dict, facts: dict) -> str:
     return ""
 
 
-DECISION_LABEL = {"accepted": "accepted policy", "overridden": "overrode policy",
-                  "decided": "decided (policy flagged)", "stale": "needs re-confirming",
+DECISION_LABEL = {"accepted": "accepted policy", "overridden": "override",
+                  "decided": "override (policy flagged)", "stale": "needs re-confirming",
                   "undecided": "undecided"}
 STALE_LABEL = {"conflicts": "needs re-deciding: recommendation changed",
                "now_agrees": "needs re-confirming: recommendation now matches",
-               "item_changed": "needs re-deciding: item changed"}
+               "item_changed": "needs re-deciding: item changed",
+               "vote_retired": "needs re-deciding: vote no longer an option"}
 
 COLUMNS = ["company", "meeting_date", "item", "title", "proponent", "board_rec", "policy_rec",
            "policy_rule", "policy_reason", "source_page", "final_vote", "changed", "decision",

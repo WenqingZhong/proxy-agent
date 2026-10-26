@@ -96,7 +96,9 @@ def changes(old_rows: list[dict], new_rows: list[dict]) -> list[dict]:
             if a["final_vote"] != b["final_vote"]:
                 lines.append(f"vote: {_vote(a['final_vote'])} → {_vote(b['final_vote'])}"
                              + (f" ({b['decision']})" if not b["final_vote"] else ""))
-            elif a["decision"] != b["decision"]:
+            elif not b["final_vote"] and a["decision"] != b["decision"]:
+                # Only for blank votes (e.g. undecided → needs re-deciding). With a vote set, a real
+                # status change shows as a vote or policy change; label wording alone isn't one.
                 lines.append(f"status: {a['decision']} → {b['decision']}")
             elif a["reason"] != b["reason"] and b["final_vote"]:   # same vote, new reason
                 lines.append("reason changed")

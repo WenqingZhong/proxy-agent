@@ -6,8 +6,8 @@ const state = {
   filings: [],
   cache: {},            // id -> full filing
   decisions: {},        // id -> { items: {number: {state, final_vote, reason, ...}}, decided, total, undecided }
-  page: null,           // page drawer: { filingId, index, find, kind, label, pageCount }
-  editing: null,        // item number whose vote form is open
+  editing: null,        // item number whose decision is being changed
+  override: null,       // the vote picked against the policy (or on a flagged item), waiting for a reason
   collapsed: {},
   reports: {},          // id -> what the last re-analysis changed (from the server)
 };
@@ -43,24 +43,16 @@ const LLM_MODE = {
 };
 
 const FACT_LABEL = { attendance: "Director attendance", fees: "Auditor fees", pay: "CEO pay & TSR" };
-const CLS_LABEL = {
-  agreed: ["ok", "Keywords + LLM agree"],
-  keywords_only: ["muted", "Keywords only"],
-  disagree: ["warn", "Keywords and LLM disagree"],
-  unverified: ["warn", "LLM quote not found in filing"],
-};
 const STATE_LABEL = {
   accepted: "Accepted policy",
-  overridden: "Changed from policy",
-  decided: "Your decision",
+  overridden: "Override",
+  decided: "Override",
   stale: "Re-confirm",
   undecided: "Undecided",
 };
 // Why a decision needs another look after a re-analysis (decisions.py has the full list).
-const CHANGE_LABEL = { conflicts: "Re-decide", now_agrees: "Confirm", item_changed: "Re-decide" };
-const VOTES = ["FOR", "AGAINST", "ABSTAIN", "ABSENT"];
-const ALWAYS_EXPLAIN = ["ABSTAIN", "ABSENT"];
-const VOTE_LABEL = { FOR: "FOR", AGAINST: "AGAINST", ABSTAIN: "ABSTAIN", ABSENT: "ABSENT (not voting)" };
+const CHANGE_LABEL = { conflicts: "Re-decide", now_agrees: "Confirm", item_changed: "Re-decide", vote_retired: "Re-decide" };
+const VOTES = ["FOR", "AGAINST"];
 
 // ------------------------------------------------------------------ small pieces
 
@@ -256,6 +248,7 @@ function reviewBanner(f, ds) {
   const rows = [
     [r.conflicts, "Recommendation changed and no longer matches your vote. Decide again"],
     [r.item_changed, "A different item now has this number. Decide again"],
+    [r.vote_retired, "Voted ABSTAIN or ABSENT, which are no longer options. Vote FOR or AGAINST"],
     [r.now_agrees, "Recommendation changed and now matches your vote. Confirm to keep it"],
     [r.basis_changed, "Same recommendation, different reasoning. Your vote still counts; worth a look"],
   ].filter(([ns]) => ns && ns.length);
@@ -363,21 +356,14 @@ function renderFiling(f) {
 
 // ------------------------------------------------------------------ item view
 
-// Where the recommendation comes from in the filing, as links that open the exact passage.
-function sources(f, it) {
-  const out = [];
-  for (const name of it.recommendation.facts) {
-    for (const ev of f.facts[name]?.evidence || []) out.push({ ...ev, label: FACT_LABEL[name] });
-  }
-  if (it.board_rec_evidence) out.push({ ...it.board_rec_evidence, find: it.board_rec_evidence.quote, label: "Board's recommendation" });
-  return out;
-}
-
-function sourceLink(ev) {
-  if (!ev || ev.page_index == null) return "";
-  return `<button class="source" data-open-page="${ev.page_index}" data-find="${esc(ev.find || ev.quote || "")}"
-            data-kind="${esc(ev.kind || "text")}" data-label="${esc(ev.label || "")}">
-            <span>${esc(ev.label || "Filing")}</span><span class="source-page">p. ${esc(ev.page)} →</span></button>`;
+// A link to the cited words in the live filing on SEC.gov. The URL carries a text
+// fragment, so the browser scrolls to the passage and highlights it.
+function secLink(link, label = "") {
+  if (!link?.url) return "";
+  const where = link.exact ? `p. ${esc(link.page)}` : `p. ${esc(link.page)} (page only)`;
+  const title = link.exact ? "Opens the filing on SEC.gov with this passage highlighted"
+                           : "Opens the filing on SEC.gov at this page (the exact words couldn't be pinned)";
+  return `<a class="source" href="${esc(link.url)}" target="_blank" rel="noopener" title="${title}">${label ? `<span>${esc(label)}</span>` : ""}<span class="source-page">${where} ↗</span></a>`;
 }
 
 function settingLine(id) {
@@ -387,33 +373,39 @@ function settingLine(id) {
   return `<li><b>${esc(s.label)}:</b> ${esc(val)}<div class="why">${esc(s.why)}</div></li>`;
 }
 
-function voteForm(it, d) {
+// The two votes as buttons. The policy's vote accepts it; the other is an override and
+// needs a reason. On a flagged item there is no policy vote, so either choice is an override.
+function voteButtons(it, { cancel = false } = {}) {
   const policy = it.recommendation.vote;
-  const pre = d.final_vote || d.final_vote_then;
-  const cancellable = policy !== "FLAG" || d.final_vote || d.state === "stale";
+  return `
+    <div class="vote-choices">
+      ${VOTES.map((v) => v === policy
+        ? `<button class="btn vote-btn ${v}" data-accept="${esc(it.number)}" title="Accept the policy's vote">${v}<small>policy</small></button>`
+        : `<button class="btn vote-btn ${v}" data-override="${v}" title="${policy === "FLAG" ? "Vote" : "Override the policy and vote"} ${v} (needs a reason)">${v}<small>${policy === "FLAG" ? "needs a reason" : "override"}</small></button>`).join("")}
+      ${cancel ? `<button class="btn ghost" type="button" data-cancel-edit>Cancel</button>` : ""}
+    </div>`;
+}
+
+function overrideForm(it, d, vote) {
+  const policy = it.recommendation.vote;
+  const head = policy === "FLAG" ? `Override: vote <b>${vote}</b>` : `Override the policy's ${esc(policy)}: vote <b>${vote}</b>`;
+  const keep = d.reason && (d.final_vote || d.final_vote_then) === vote ? d.reason : "";
   return `
     <form class="vote-form" data-vote-form="${esc(it.number)}">
-      <div class="vote-label">${policy === "FLAG" ? "The policy doesn't decide this one. Your vote:" : "Your vote:"}</div>
-      <div class="seg" role="radiogroup">
-        ${VOTES.map((v) => `
-          <label class="seg-opt ${v}">
-            <input type="radio" name="vote" value="${v}" ${pre === v ? "checked" : ""}>
-            <span>${VOTE_LABEL[v]}${v === policy ? ` <small>(policy)</small>` : ""}</span>
-          </label>`).join("")}
-      </div>
-      <label class="reason-label" for="reason">Reason <span class="muted" data-reason-hint>${reasonHint(it, pre)}</span></label>
-      <textarea id="reason" name="reason" rows="3" placeholder="Why this vote? It's saved with the vote and goes into the export.">${esc(d.reason || "")}</textarea>
+      <input type="hidden" name="vote" value="${vote}">
+      <div class="vote-label">${voteBadge(vote, true)} <span>${head}</span></div>
+      <label class="reason-label" for="reason">Reason <span class="muted">(required)</span></label>
+      <textarea id="reason" name="reason" rows="3" placeholder="Why this vote? It's saved with the vote and goes into the export.">${esc(keep)}</textarea>
       <div class="form-err" data-form-err hidden></div>
       <div class="form-actions">
-        <button class="btn primary" type="submit">Save vote</button>
-        ${cancellable ? `<button class="btn" type="button" data-cancel-edit>Cancel</button>` : ""}
+        <button class="btn primary" type="submit">Save override</button>
+        <button class="btn" type="button" data-cancel-edit>Cancel</button>
       </div>
     </form>`;
 }
 
 const needsReason = (it, vote) =>
-  it.recommendation.vote === "FLAG" || ALWAYS_EXPLAIN.includes(vote) || (vote && vote !== it.recommendation.vote);
-const reasonHint = (it, vote) => (needsReason(it, vote) ? "(required)" : vote ? "(optional)" : "(required unless you keep the policy vote)");
+  it.recommendation.vote === "FLAG" || (vote && vote !== it.recommendation.vote);
 
 // Before/after for a decision whose recommendation or reasoning changed since she made it.
 function changesBox(d) {
@@ -430,31 +422,23 @@ function changesBox(d) {
 
 function decisionBox(f, it) {
   const d = decisionOf(f, it.number);
-  const policy = it.recommendation.vote;
-  const editing = state.editing === it.number || (!d.final_vote && policy === "FLAG" && d.change !== "now_agrees");
+  const mine = state.editing === it.number;
   let body;
-  if (d.state === "stale" && state.editing !== it.number) {
+  if (mine && state.override) {
+    body = overrideForm(it, d, state.override);
+  } else if (d.state === "stale" && !mine) {
     const then = `You voted <b>${esc(d.final_vote_then || "")}</b>${d.reason ? `: “${esc(d.reason)}”` : ""}.`;
-    let actions;
-    if (d.change === "now_agrees") {
-      actions = `<div class="form-actions">
-        <button class="btn primary" data-confirm="${esc(it.number)}">Keep ${esc(d.final_vote_then)} <kbd>A</kbd></button>
-        <button class="btn" data-edit="${esc(it.number)}">Choose another vote <kbd>O</kbd></button></div>`;
-    } else if (policy === "FLAG") {
-      actions = voteForm(it, d);
-    } else {
-      actions = `<div class="form-actions">
-        <button class="btn primary" data-accept="${esc(it.number)}">Accept ${esc(policy)} <kbd>A</kbd></button>
-        <button class="btn" data-edit="${esc(it.number)}">Keep or choose another vote <kbd>O</kbd></button></div>`;
-    }
+    const actions = d.change === "now_agrees"
+      ? `<div class="form-actions">
+          <button class="btn primary" data-confirm="${esc(it.number)}">Keep ${esc(d.final_vote_then)}</button>
+          ${VOTES.filter((v) => v !== d.final_vote_then).map((v) => `<button class="btn" data-override="${v}">${v} (override)</button>`).join("")}</div>`
+      : voteButtons(it);
     body = `<div class="warn">${esc(d.note)} ${then}</div>${changesBox(d)}${actions}`;
-  } else if (editing) {
-    body = voteForm(it, d);
-  } else if (d.final_vote) {
+  } else if (d.final_vote && !mine) {
     body = `
       <div class="decided">
         <div class="decided-top">${voteBadge(d.final_vote, true)} <span class="yv ${d.state}">${esc(STATE_LABEL[d.state])}</span>
-          ${d.state === "overridden" ? `<span class="muted">Policy said ${esc(policy)}</span>` : ""}</div>
+          ${d.state === "overridden" ? `<span class="muted">Policy said ${esc(it.recommendation.vote)}</span>` : ""}</div>
         ${d.reason ? `<div class="decided-reason">“${esc(d.reason)}”</div>` : ""}
         <div class="meta-line">Saved ${esc(new Date(d.decided_at).toLocaleString())}${d.reconfirmed_after?.length ? ` · re-confirmed after: ${esc(d.reconfirmed_after.join("; "))}` : ""}</div>
       </div>
@@ -466,11 +450,7 @@ function decisionBox(f, it) {
         <button class="btn ghost" data-clear="${esc(it.number)}">Undo decision</button>
       </div>`;
   } else {
-    body = `
-      <div class="form-actions">
-        <button class="btn primary" data-accept="${esc(it.number)}">Accept ${esc(policy)} <kbd>A</kbd></button>
-        <button class="btn" data-edit="${esc(it.number)}">Override… <kbd>O</kbd></button>
-      </div>`;
+    body = voteButtons(it, { cancel: mine && !!d.final_vote });
   }
   return `<section class="block decision ${d.state}" id="decision"><h2>Your decision</h2>${body}</section>`;
 }
@@ -479,22 +459,18 @@ function votingOn(it) {
   const s = it.summary;
   const lead = it.kind === "director"
     ? `<p class="lead">Elect <b>${esc(it.title.replace(/^Elect\s+/, ""))}</b> to the board.</p>` : "";
-  if (!s) return `${lead}<p class="muted">Couldn't find the proposal's description in the filing. ${sourceLink({ ...it.section, find: it.section.quote, label: "Open the item's section" })}</p>`;
+  if (!s) return `${lead}<p class="muted">Couldn't find the proposal's description in the filing (section starts on p. ${esc(it.section.page)}).</p>`;
   return `
     ${lead}
     <blockquote class="filing-quote">${esc(s.quote)}</blockquote>
-    <div class="sources">${sourceLink({ ...s, find: s.quote, label: it.summary_kind === "resolution" ? "The resolution in the filing" : "The proposal in the filing" })}</div>`;
+    <div class="sources">${secLink(s.link, it.summary_kind === "resolution" ? "Read the resolution in the filing" : "Read this in the filing")}</div>`;
 }
 
 function renderItem(f, it) {
   const r = it.recommendation;
-  const c = it.classification;
-  const cl = CLS_LABEL[c.status] || ["muted", c.status];
-  const llm = c.llm;
   const rule = ruleById(r.rule);
   const idx = f.items.indexOf(it);
   const prev = f.items[idx - 1], next = f.items[idx + 1];
-  const src = sources(f, it);
 
   const main = $("#main");
   main.classList.add("full");
@@ -520,33 +496,25 @@ function renderItem(f, it) {
 
           <section class="block rec ${r.vote}">
             <h2>Recommendation</h2>
-            <div class="rec-grid">
-              <span class="rec-who">Policy</span>
-              <span>${voteBadge(r.vote, true)} <span class="rec-head">${esc(r.headline)}</span></span>
+            <div class="rec-row">
               <span class="rec-who">Board</span>
-              <span>${recBadge(it.board_rec)} ${differsFromBoard(it) ? chip("warn", "Differs from the policy") : ""}</span>
+              <div>${recBadge(it.board_rec)} ${secLink(it.board_rec_evidence?.link)}
+                ${differsFromBoard(it) ? chip("warn", "Differs from the policy") : ""}</div>
             </div>
-            ${r.steps.length ? `<ol class="steps">${r.steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>` : ""}
-            ${src.length ? `<div class="sources"><span class="sources-label">See it in the filing:</span>${src.map(sourceLink).join("")}</div>` : ""}
+            <div class="rec-row">
+              <span class="rec-who">Policy</span>
+              <div>
+                <div>${voteBadge(r.vote, true)} <span class="rec-head">${esc(r.headline)}</span></div>
+                <div class="rule-line">${ruleChip(r.rule)}
+                  <span class="rule-text">${r.rule === "FLAG" ? "No rule in the policy covers this item, or a fact a rule needs couldn't be confirmed." : `“${esc(rule?.text || "")}”`}</span></div>
+                ${r.settings.length ? `<ul class="settings">${r.settings.map(settingLine).join("")}</ul>` : ""}
+                ${r.steps.length ? `<ol class="reasons">${r.steps.map((x) => `
+                  <li><span class="reason-text">${esc(x.text ?? x)}</span>${secLink(x.link)}</li>`).join("")}</ol>` : ""}
+              </div>
+            </div>
           </section>
 
           ${decisionBox(f, it)}
-
-          <section class="block">
-            <h2>Policy rule</h2>
-            <div class="rule-line">${ruleChip(r.rule)}</div>
-            <p class="rule-text">${r.rule === "FLAG" ? "No rule in the policy covers this item, or a fact the rule needs couldn't be confirmed. Your call." : `“${esc(rule?.text || "")}”`}</p>
-            ${r.settings.length ? `<div class="sub-label">Judgement calls applied (set in the policy)</div><ul class="settings">${r.settings.map(settingLine).join("")}</ul>` : ""}
-            ${c.status !== "agreed" ? `<div class="warn">${esc(c.note)}</div>` : ""}
-            <details class="how">
-              <summary>How the rule was matched ${chip(cl[0], cl[1])}</summary>
-              <div class="meta-line">Keywords say: ${esc(c.keyword.category.replace(/_/g, " "))}${c.keyword.direction !== "n/a" ? ` (${esc(c.keyword.direction)})` : ""}.
-                AI says: ${llm ? esc(llm.category.replace(/_/g, " ")) + (llm.direction && llm.direction !== "n/a" ? ` (${esc(llm.direction)})` : "") + ` <span class="muted">[${esc(llm.source)}]</span>` : `<span class="muted">${esc(c.llm_error || "not used")}</span>`}.</div>
-              ${llm ? `<div class="meta-line">AI's reason: ${esc(llm.reason)}</div>
-                <div class="sources">${llm.quote_verified ? sourceLink({ page: llm.page, page_index: llm.page_index, quote: llm.quote, label: "Passage the AI relied on" }) : chip("warn", "AI's quote not found in the filing")}</div>` : ""}
-            </details>
-          </section>
-          <p class="hint">Keys: ← → items · A accept · O override · Esc overview</p>
         </div>
       </div>
     </div>`;
@@ -563,7 +531,7 @@ async function saveDecision(f, numbers, action, vote, reason) {
   state.decisions[f.id] = ds;
   const s = state.filings.find((x) => x.id === f.id);
   if (s) { s.decided_count = ds.decided; s.review_count = reviewCount(ds); s.export_outdated = !!ds.export?.outdated; }
-  state.editing = null;
+  state.editing = state.override = null;
   return ds;
 }
 
@@ -576,54 +544,6 @@ function goToNextOpen(f, fromNumber) {
   const next = [...order.slice(from + 1), ...order.slice(0, from)].find((n) => open.has(n));
   if (next) location.hash = itemHref(f, next);
   else { toast("Every item is decided. Ready to export."); location.hash = filingHref(f); }
-}
-
-// ------------------------------------------------------------------ page viewer (drawer)
-
-async function openPage(index, find, kind = "text", label = "") {
-  const f = currentFiling();
-  if (!f) return;
-  const page = await api(`/api/filings/${encodeURIComponent(f.id)}/pages/${index}`);
-  state.page = { filingId: f.id, index: page.index, find, kind, label, pageCount: page.page_count };
-  $("#overlay").hidden = false;
-  const target = $("#overlay .overlay-box");
-
-  const norm = (s) => s.replace(/(\w)- (\w)/g, "$1$2").replace(/[’]/g, "'").replace(/[“”]/g, '"')
-    .replace(/\s+/g, " ").trim().toLowerCase();
-  const q = find ? norm(find) : "";
-  const lineHit = (t) => {
-    if (!q || kind === "table") return false;
-    const n = norm(t);
-    return n === q || n.includes(q) || (q.length > 30 && n.length > 30 && q.includes(n));
-  };
-  // EDGAR often wraps prose in one-cell tables, so a text quote can land in a table too.
-  const tableHit = (rows) => q && rows.some((r) => r.some((c) => (kind === "table" ? norm(c).includes(q) : lineHit(c))));
-  const blocks = page.blocks || page.lines.map((text) => ({ t: "p", text }));
-  const where = page.label.startsWith("#")
-    ? `Unnumbered page (${page.index + 1} of ${page.page_count} in file)`
-    : `Page ${page.label} of the filing`;
-  target.innerHTML = `
-    <div class="pv-head">
-      <div><div class="kicker">${esc(label || "Filing")}</div><div class="pv-title">${esc(where)}</div></div>
-      <div class="pv-actions">
-        <button class="icon-btn" data-page-step="-1" title="Previous page" aria-label="Previous page" ${page.index === 0 ? "disabled" : ""}>↑</button>
-        <button class="icon-btn" data-page-step="1" title="Next page" aria-label="Next page" ${page.index >= page.page_count - 1 ? "disabled" : ""}>↓</button>
-        <button class="icon-btn" data-close-overlay title="Close (Esc)" aria-label="Close">×</button>
-      </div>
-    </div>
-    <div class="pv-body pagetext">${blocks.map((b) => b.t === "table"
-      ? `<div class="ptable ${tableHit(b.rows) ? "hit" : ""}"><table>${b.rows.map((r) =>
-          `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</table></div>`
-      : `<p class="${lineHit(b.text) ? "hit" : ""}">${esc(b.text)}</p>`).join("")}</div>`;
-  const body = target.querySelector(".pv-body");
-  const hitEl = body.querySelector(".hit");
-  // Scroll only the page viewer, not the surrounding layout.
-  body.scrollTop = hitEl ? Math.max(0, hitEl.offsetTop - body.clientHeight / 4) : 0;
-}
-
-function closeOverlay() {
-  $("#overlay").hidden = true;
-  state.page = null;
 }
 
 // ------------------------------------------------------------------ policy
@@ -700,7 +620,7 @@ function applyReanalysis(res) {
     delete state.cache[r.filing];
     delete state.decisions[r.filing];
   }
-  state.editing = null;
+  state.editing = state.override = null;
 }
 
 async function reanalyse(body, busyEl) {
@@ -746,7 +666,6 @@ async function loadFiling(id) {
 
 async function route() {
   const hash = location.hash || "";
-  closeOverlay();
   if (!hash || hash === "#/") {
     if (state.filings.length) location.hash = filingHref(state.filings[0]);
     else renderPolicy();
@@ -763,7 +682,7 @@ async function route() {
     if (!r.item) return renderFiling(f);
     const it = f.items.find((x) => x.number === r.item);
     if (!it) { $("#main").innerHTML = `<div class="empty">No item ${esc(r.item)} in this filing.</div>`; return; }
-    if (state.editing !== it.number) state.editing = null;
+    if (state.editing !== it.number) state.editing = state.override = null;
     return renderItem(f, it);
   }
   renderRail();
@@ -776,20 +695,6 @@ async function act(fn) {
 
 document.addEventListener("click", (e) => {
   const t = e.target;
-  const src = t.closest("[data-open-page]");
-  if (src) {
-    e.preventDefault();
-    openPage(Number(src.dataset.openPage), src.dataset.find, src.dataset.kind, src.dataset.label);
-    return;
-  }
-  const step = t.closest("[data-page-step]");
-  if (step && state.page) {
-    const p = state.page;
-    openPage(p.index + Number(step.dataset.pageStep), p.find, p.kind, p.label);
-    return;
-  }
-  if (t.closest("[data-close-overlay]") || t.id === "overlay") return closeOverlay();
-
   const tog = t.closest("[data-toggle]");
   if (tog) {
     const key = tog.dataset.toggle;
@@ -851,8 +756,10 @@ document.addEventListener("click", (e) => {
       else { renderRail(); refreshDecision(f, it); }
     });
   }
-  if (it && t.closest("[data-edit]")) { state.editing = it.number; return refreshDecision(f, it); }
-  if (it && t.closest("[data-cancel-edit]")) { state.editing = null; return refreshDecision(f, it); }
+  const ov = t.closest("[data-override]");
+  if (it && ov) { state.editing = it.number; state.override = ov.dataset.override; return refreshDecision(f, it); }
+  if (it && t.closest("[data-edit]")) { state.editing = it.number; state.override = null; return refreshDecision(f, it); }
+  if (it && t.closest("[data-cancel-edit]")) { state.editing = state.override = null; return refreshDecision(f, it); }
   if (it && t.closest("[data-clear]")) {
     return act(async () => {
       await saveDecision(f, [it.number], "clear");
@@ -866,11 +773,6 @@ document.addEventListener("click", (e) => {
 document.addEventListener("change", (e) => {
   const sel = e.target.closest("[data-setting]");
   if (sel) return reanalyse({ id: sel.dataset.setting, value: sel.value }, sel);
-  const form = e.target.closest("[data-vote-form]");
-  const f = currentFiling();
-  if (!form || !f || e.target.name !== "vote") return;
-  const it = f.items.find((x) => x.number === form.dataset.voteForm);
-  form.querySelector("[data-reason-hint]").textContent = reasonHint(it, e.target.value);
 });
 
 document.addEventListener("submit", (e) => {
@@ -879,7 +781,7 @@ document.addEventListener("submit", (e) => {
   e.preventDefault();
   const f = currentFiling();
   const it = f.items.find((x) => x.number === form.dataset.voteForm);
-  const vote = form.querySelector("input[name=vote]:checked")?.value;
+  const vote = form.querySelector("input[name=vote]")?.value;
   const reason = form.querySelector("textarea").value;
   const err = form.querySelector("[data-form-err]");
   const fail = (msg) => { err.textContent = msg; err.hidden = false; };
@@ -896,10 +798,7 @@ document.addEventListener("submit", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    if (!$("#overlay").hidden) return closeOverlay();
-    if (typing(e)) return e.target.blur();
-  }
+  if (e.key === "Escape" && typing(e)) return e.target.blur();
   if (typing(e) || e.metaKey || e.ctrlKey || e.altKey) return;
   const r = parseRoute();
   const f = currentFiling();
@@ -912,7 +811,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "ArrowRight" && idx < f.items.length - 1) location.hash = itemHref(f, f.items[idx + 1].number);
   else if ((e.key === "a" || e.key === "A") && $("[data-accept], .decision.stale [data-confirm]"))
     $("[data-accept], .decision.stale [data-confirm]").click();
-  else if ((e.key === "o" || e.key === "O") && $("[data-edit]")) { e.preventDefault(); state.editing = it.number; refreshDecision(f, it); }
+  else if ((e.key === "o" || e.key === "O") && $("#decision [data-override]")) { e.preventDefault(); $("#decision [data-override]").click(); }
 });
 window.addEventListener("hashchange", route);
 

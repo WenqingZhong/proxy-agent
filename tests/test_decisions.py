@@ -72,19 +72,31 @@ class Decisions(unittest.TestCase):
                 decisions.apply(self.root, f, [n], "accept")
             with self.assertRaises(ValueError):
                 decisions.apply(self.root, f, [n], "vote", "AGAINST")
-            data = decisions.apply(self.root, f, [n], "vote", "ABSTAIN", "Need more info from the proponent")
+            data = decisions.apply(self.root, f, [n], "vote", "AGAINST", "Need more info from the proponent")
             self.assertEqual(decisions.states(f, data)["items"][n]["state"], "decided", fid)
 
-    def test_absent_needs_a_reason(self):
+    def test_only_for_or_against(self):
+        """Every item, flagged or not, is voted FOR or AGAINST: no abstain, no absent."""
         for fid, n in (("starbucks-2026-def14a", "3"), ("alphabet-2026-def14a", "7"), ("amazon-2026-def14a", "1a")):
             f = filing(fid)
-            with self.assertRaises(ValueError):
-                decisions.apply(self.root, f, [n], "vote", "ABSENT", "")
-            data = decisions.apply(self.root, f, [n], "vote", "ABSENT", "Shares on loan; not recalled")
-            st = decisions.states(f, data)["items"][n]
-            self.assertEqual(st["final_vote"], "ABSENT", fid)
-            row = next(r for r in decisions.export_rows(f, data, RULE_NAMES) if r["item"] == n)
-            self.assertEqual((row["final_vote"], row["reason"]), ("ABSENT", "Shares on loan; not recalled"))
+            for v in ("ABSTAIN", "ABSENT"):
+                with self.assertRaises(ValueError):
+                    decisions.apply(self.root, f, [n], "vote", v, "Shares on loan; not recalled")
+            data = decisions.apply(self.root, f, [n], "vote", "AGAINST", "House view")
+            self.assertEqual(decisions.states(f, data)["items"][n]["final_vote"], "AGAINST", fid)
+
+    def test_retired_vote_must_be_decided_again(self):
+        """A decision saved as ABSTAIN before only FOR/AGAINST existed stops counting, but stays on disk."""
+        f = filing("amazon-2026-def14a")
+        data = decisions.apply(self.root, f, ["2"], "vote", "AGAINST", "House view")
+        data["2"]["vote"] = "ABSTAIN"
+        st = decisions.states(f, data)
+        self.assertEqual((st["items"]["2"]["state"], st["items"]["2"]["change"]), ("stale", "vote_retired"))
+        self.assertIn("2", st["undecided"])
+        self.assertEqual(st["review"]["vote_retired"], ["2"])
+        row = next(r for r in decisions.export_rows(f, data, RULE_NAMES) if r["item"] == "2")
+        self.assertEqual(row["final_vote"], "")
+        self.assertEqual(data["2"]["vote"], "ABSTAIN")      # nothing deleted for her
 
     def test_bulk_accept_directors(self):
         for fid in FIDS:

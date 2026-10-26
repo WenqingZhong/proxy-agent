@@ -144,13 +144,20 @@ Done: browse filings, ballot, board recs, facts, classification, recommendations
 settings, tests (67). Plus:
 - **Item view** (`#/filing/<id>/item/<n>`), one column, top to bottom: *What you're voting on*
   (verbatim RESOLVED text, else the section's lead paragraph: `summary` / `summary_kind` from
-  `extract._find_summary`), *Recommendation* (policy + board, reasoning steps, source links),
-  *Your decision*, *Policy rule* (rule text, settings applied, how the rule was matched, folded).
-  Evidence is never shown inline: source links open the exact filing page in a right-hand drawer
-  with the passage highlighted. Left rail expands the selected filing's items. ←/→, A, O, Esc.
+  `extract._find_summary`), *Recommendation* (board rec, then the policy rec with its rule text,
+  settings applied and numbered reasons), *Your decision*: two buttons, FOR and AGAINST. The
+  policy's vote accepts; the other is an override with a required reason (on REVIEW items both are
+  overrides). No in-page keyboard hint, no rail footer, no "how the rule was matched" panel.
+  Each reason is one specific claim (a fee cell, a pay figure, the attendance sentence) with its
+  own link to the live filing on SEC.gov (`data/filings/sources.json`). Links carry a text
+  fragment (`#:~:text=`) built by `app/links.py` from the filing as a browser renders it, so the
+  browser highlights the exact words; a link is only "exact" if the browser's first match is the
+  cited passage (190/192 are; the rest land on the right page and say so). There's no in-app
+  page viewer any more. Left rail expands the selected filing's items. Keys: ←/→, A (accept),
+  O (override), Esc.
 - **Decisions** (`app/decisions.py`, `data/decisions/<id>.json`, gitignored): accept, or vote
-  FOR / AGAINST / ABSTAIN / ABSENT with a reason (required when it differs from the policy, for
-  REVIEW items, and always for ABSTAIN/ABSENT). Stale if the recommendation changes later.
+  FOR or AGAINST with a reason (required when it differs from the policy, and for REVIEW items).
+  Only FOR and AGAINST exist: no abstain or absent (user's call). Stale if the recommendation changes later.
   Bulk-accept passing nominees. Auto-advance to the next open item.
 - **Export** CSV + JSON per filing; warns if undecided. Every export is saved first with its
   timestamp (`POST /api/filings/<id>/exports`), then downloaded from the saved copy, so past exports
@@ -170,7 +177,7 @@ settings, tests (67). Plus:
   (action `confirm` keeps her vote + reason against the current recommendation). Old decisions go
   to `history`; `reconfirmed_after` lists what changed; both reach the export.
   Triggers: editing a setting on the policy page (re-analyses all filings), the Re-analyse button
-  (one filing) / rail link (all, also picks up new files), or a restart with a different
+  (one filing; a new filing file needs a settings change or a restart), or a restart with a different
   `ANTHROPIC_MODEL` / `LLM_MODE` (decisions compare their stored `run` on read).
 
 UI: desktop web only, no mobile styles (user's call).

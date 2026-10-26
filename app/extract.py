@@ -308,13 +308,17 @@ def _find_summary(pages: list[Page], start: int, end: int, heading: str) -> tupl
     if text.endswith(":"):
         # "our Board nominated:" followed by a bulleted list: keep the list and the line that closes it.
         rest = [ln for _, ln in lines[k + 1:k + 30]]
-        bullets = []
+        bullets, marker = [], False
         for ln in rest:
-            if not ln.startswith("•"):
+            if ln.strip() == "•":            # the bullet on its own line, the name on the next
+                marker = True
+                continue
+            if not ln.startswith("•") and not marker:
                 if ln[:1].islower():
                     bullets.append(ln)
                 break
-            bullets.append(ln)
+            bullets.append(ln if ln.startswith("•") else f"• {ln}")
+            marker = False
         text = " ".join([text] + bullets)
     elif text[0].islower():
         # A sentence continued after a bulleted list ("our Board nominated: • A • B ... as nominees

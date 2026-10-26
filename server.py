@@ -27,6 +27,7 @@ from policy import POLICY, current_settings, policy_view, set_setting  # noqa: E
 FILINGS_DIR = ROOT / "data" / "filings"
 DECISIONS_DIR = ROOT / "data" / "decisions"
 EXPORTS_DIR = ROOT / "data" / "exports"
+SOURCES_FILE = FILINGS_DIR / "sources.json"   # filing id -> its URL on SEC.gov, for evidence links
 RULE_NAMES = {r["id"]: r["section"] for r in POLICY["rules"]}
 STATIC_DIR = ROOT / "static"
 
@@ -43,7 +44,8 @@ class Store:
     def _analyze(self, path: Path, settings: dict) -> tuple[dict, list]:
         t0 = time.time()
         raw = path.read_text(encoding="utf-8", errors="ignore")
-        filing, pages = analyze(path.stem, raw, settings)
+        sources = json.loads(SOURCES_FILE.read_text(encoding="utf-8")) if SOURCES_FILE.exists() else {}
+        filing, pages = analyze(path.stem, raw, settings, source_url=sources.get(path.stem))
         filing["source_file"] = path.name
         votes = [i["recommendation"]["vote"] for i in filing["items"]]
         print(f"  {path.name}: {filing['company']}, {len(votes)} items "

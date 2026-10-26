@@ -10,6 +10,7 @@ import llm
 from classify import merge
 from extract import extract_ballot
 from facts import find_all, find_attendance, find_fees, find_pay
+from links import Linker
 from pages import split_pages
 from policy import POLICY, SETTINGS
 from rules import recommend
@@ -77,7 +78,32 @@ def run_inputs(filing_id: str, raw_html: str, settings: dict) -> dict:
     }
 
 
-def analyze(filing_id: str, raw_html: str, settings: dict | None = None) -> tuple[dict, list]:
+def _add_links(filing: dict, pages: list, source_url: str | None) -> None:
+    """Point every cited claim, the vote summary and the board's recommendation at
+    the exact words in the live filing (SEC.gov), via text-fragment links."""
+    linker = Linker(source_url, pages)
+    cache: dict = {}
+
+    def link(cite):
+        if not cite:
+            return None
+        key = (cite.get("quote"), tuple(cite.get("terms") or ()), cite["page_index"])
+        if key not in cache:
+            cache[key] = (linker.quote(cite["quote"], cite["page_index"]) if cite.get("quote")
+                          else linker.terms(cite["terms"], cite["page_index"]))
+        return cache[key]
+
+    for it in filing["items"]:
+        for st in it["recommendation"]["steps"]:
+            st["link"] = link(st.get("cite"))
+        for key in ("summary", "board_rec_evidence"):
+            ev = it.get(key)
+            if ev:
+                ev["link"] = link({"quote": ev["quote"], "page_index": ev["page_index"], "page": ev["page"]})
+
+
+def analyze(filing_id: str, raw_html: str, settings: dict | None = None,
+            source_url: str | None = None) -> tuple[dict, list]:
     settings = dict(SETTINGS if settings is None else settings)
     pages = split_pages(raw_html)
     filing = extract_ballot(filing_id, pages).to_dict()
@@ -106,11 +132,13 @@ def analyze(filing_id: str, raw_html: str, settings: dict | None = None) -> tupl
         it["classification"] = cls
         it["policy_rule"] = cls["rule"]
         it["recommendation"] = recommend(it, cls, facts, settings)
+    _add_links(filing, pages, source_url)
 
     filing["facts"] = facts
     filing["llm_mode"] = llm.mode_for(filing_id)
     filing["llm_model"] = llm.MODEL if filing["llm_mode"] == "live" else None
     filing["settings"] = settings
+    filing["source_url"] = source_url
     filing["run"] = {**run_inputs(filing_id, raw_html, settings),
                      "analyzed_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     return filing, pages

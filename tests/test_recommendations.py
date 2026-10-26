@@ -77,7 +77,7 @@ class Recommendations(unittest.TestCase):
         self.assertEqual(it["1k"]["recommendation"]["vote"], "FOR")
         self.assertEqual(it["2"]["recommendation"]["vote"], "FOR")
         self.assertEqual(it["3"]["recommendation"]["vote"], "FOR")
-        self.assertIn("rose", it["3"]["recommendation"]["steps"][0])
+        self.assertIn("rose", it["3"]["recommendation"]["steps"][0]["text"])
 
     def test_settings_change_outcome(self):
         f, _, _ = run("starbucks-2026-def14a")
