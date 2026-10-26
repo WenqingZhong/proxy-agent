@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Proxy Agent</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="rail">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">▣</span>
+        <span>Proxy Agent</span>
+      </div>
+
+      <nav>
+        <a class="nav-link" id="nav-policy" href="#/policy">
+          <span>Voting policy</span>
+          <span class="nav-meta" id="policy-count"></span>
+        </a>
+        <div class="nav-heading">Filings <span class="nav-meta" id="filing-count"></span></div>
+        <ul id="filing-list" class="filing-list"></ul>
+      </nav>
+
+      <p class="rail-foot">Add a DEF 14A (.htm) to <code>data/filings/</code> and restart the server.</p>
+    </aside>
+
+    <main id="main" class="main">
+      <div class="empty">Loading…</div>
+    </main>
+
+    <aside id="viewer" class="viewer" hidden>
+      <header class="viewer-head">
+        <div>
+          <div class="viewer-kicker" id="viewer-company"></div>
+          <div class="viewer-title">Page <span id="viewer-page"></span></div>
+        </div>
+        <div class="viewer-actions">
+          <button class="icon-btn" id="viewer-prev" title="Previous page" aria-label="Previous page">‹</button>
+          <button class="icon-btn" id="viewer-next" title="Next page" aria-label="Next page">›</button>
+          <button class="icon-btn" id="viewer-close" title="Close" aria-label="Close">×</button>
+        </div>
+      </header>
+      <div class="viewer-body" id="viewer-body"></div>
+    </aside>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
